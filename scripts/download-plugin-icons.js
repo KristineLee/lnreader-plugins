@@ -17,7 +17,7 @@ const skip = new Set([
   'coralboutique',
   'crimsonscrolls',
   'daonovel',
-  'dragonholic',
+  'dragonholictranslations',
   'dragontea',
   'foxaholic',
   'kiniga',
