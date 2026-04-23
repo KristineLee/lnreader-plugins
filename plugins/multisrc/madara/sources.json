@@ -599,10 +599,11 @@
   {
     "id": "dragonholic",
     "sourceSite": "https://dragonholictranslations.com/",
-    "sourceName": "Dragonholic Tran",
+    "sourceName": "Dragonholic Translations",
     "options": {
       "lang": "English",
-      "useNewChapterEndpoint": true
+      "useNewChapterEndpoint": true,
+      "versionIncrements": 1
     }
   },
   {
