@@ -1,16 +1,25 @@
 import { Plugin } from '@/types/plugin';
 import { fetchApi } from '@libs/fetch';
 import { FilterTypes, Filters } from '@libs/filterInputs';
-import { load as parseHTML } from 'cheerio';
+import { CheerioAPI, load as parseHTML } from 'cheerio';
 import { gcm } from '@libs/aes';
 
 class WTRLAB implements Plugin.PluginBase {
   id = 'WTRLAB';
   name = 'WTR-LAB';
   site = 'https://wtr-lab.com/';
-  version = '1.1.0';
+  version = '1.1.5';
   icon = 'src/en/wtrlab/icon.png';
   sourceLang = 'en/';
+  baggage = '';
+  trace = '';
+
+  get headers(): Record<string, string> {
+    return {
+      baggage: this.baggage,
+      'sentry-trace': this.trace,
+    };
+  }
 
   async popularNovels(
     page: number,
@@ -116,14 +125,14 @@ class WTRLAB implements Plugin.PluginBase {
       const seenIds = new Set();
 
       const novels: Plugin.NovelItem[] = json.pageProps.series
-        .filter((novel: any) => {
+        .filter((novel: Datum) => {
           if (seenIds.has(novel.raw_id)) {
             return false;
           }
           seenIds.add(novel.raw_id);
           return true;
         })
-        .map((novel: any) => ({
+        .map((novel: Datum) => ({
           name: novel.data.title,
           cover: novel.data.image,
           path: `${this.sourceLang}serie-${novel.raw_id}/${novel.slug}`,
@@ -133,9 +142,29 @@ class WTRLAB implements Plugin.PluginBase {
     }
   }
 
+  async fetchTokens() {
+    const body = await fetchApi(this.site + this.sourceLang).then(res =>
+      res.text(),
+    );
+    const $ = parseHTML(body);
+
+    this.baggage = $('meta[name="baggage"]').attr('content') ?? '';
+    this.trace = $('meta[name="sentry-trace"]').attr('content') ?? '';
+  }
+
   async parseNovel(novelPath: string): Promise<Plugin.SourceNovel> {
     const body = await fetchApi(this.site + novelPath).then(res => res.text());
     const loadedCheerio = parseHTML(body);
+
+    const baggage = loadedCheerio('meta[name="baggage"]').attr('content');
+    const trace = loadedCheerio('meta[name="sentry-trace"]').attr('content');
+
+    if (baggage && trace) {
+      this.baggage = baggage;
+      this.trace = trace;
+    } else if (!this.baggage || !this.trace) {
+      await this.fetchTokens();
+    }
 
     const nextDataElement = loadedCheerio('#__NEXT_DATA__');
     const nextDataText = nextDataElement.html();
@@ -312,7 +341,7 @@ class WTRLAB implements Plugin.PluginBase {
         '';
     }
 
-    const urlMatch = novelPath.match(/serie-(\d+)\/([^/]+)/);
+    const urlMatch = novelPath.match(/(?:serie|novel)-?(\d+)\/([^/]+)/);
     if (urlMatch) {
       rawId = parseInt(urlMatch[1]);
       slug = urlMatch[2];
@@ -325,21 +354,32 @@ class WTRLAB implements Plugin.PluginBase {
     if (chapterCountMatch) {
       chapterCount = parseInt(chapterCountMatch[1]);
     }
+    if (chapterCount === 0 && nextDataText) {
+      try {
+        const jsonData = JSON.parse(nextDataText);
 
+        chapterCount =
+          jsonData?.props?.pageProps?.serie?.serie_data?.chapter_count ?? 0;
+      } catch (error) {
+        console.error(
+          'Failed to parse chapter_count from __NEXT_DATA__:',
+          error,
+        );
+      }
+    }
     let chapters: Plugin.ChapterItem[] = [];
 
-    if (rawId && slug && chapterCount > 0) {
+    if (rawId && slug) {
       try {
-        chapters = await this.fetchAllChapters(rawId, chapterCount, slug);
+        chapters = await this.fetchAllChapters(rawId, slug);
       } catch (error) {
         console.error('Failed to fetch chapters via API:', error);
         chapters = [];
       }
     } else {
-      console.warn('Could not extract rawId, slug, or chapterCount from page', {
+      console.warn('Could not extract rawId or slug from page', {
         rawId,
         slug,
-        chapterCount,
       });
     }
 
@@ -409,7 +449,7 @@ class WTRLAB implements Plugin.PluginBase {
     }
   }
 
-  async getKey($: any): Promise<string> {
+  async getKey($: CheerioAPI): Promise<string> {
     // Fetch the novel's data in JSON format
     const searchKey = 'TextEncoder().encode("';
 
@@ -426,7 +466,7 @@ class WTRLAB implements Plugin.PluginBase {
       URLs.push(src);
     }
 
-    for (let src of URLs) {
+    for (const src of URLs) {
       const script = await fetchApi(`${this.site}${src}`);
       const raw = await script.text();
       index = raw.indexOf(searchKey);
@@ -446,7 +486,7 @@ class WTRLAB implements Plugin.PluginBase {
   async translate(data: string[]): Promise<string[]> {
     const contained = data.map((line, i) => `<a i=${i}>${line}</a>`);
 
-    let translated: any = await fetchApi(
+    const response = await fetchApi(
       'https://translate-pa.googleapis.com/v1/translateHtml',
       {
         'credentials': 'omit',
@@ -457,11 +497,11 @@ class WTRLAB implements Plugin.PluginBase {
           'X-Goog-API-Key': 'AIzaSyATBXajvzQLTDHEQbcpq0Ihe0vWDHmO520',
         },
         'referrer': 'https://wtr-lab.com/',
-        'body': `[[${JSON.stringify(contained)},\"zh-CN\",\"en\"],\"te_lib\"]`,
+        'body': `[[${JSON.stringify(contained)},"zh-CN","en"],"te_lib"]`,
         'method': 'POST',
       },
     );
-    translated = await translated.json();
+    const translated = await response.json();
     const out = translated && translated[0] ? translated[0] : [];
     return out as string[];
   }
@@ -472,7 +512,7 @@ class WTRLAB implements Plugin.PluginBase {
     let chapterNo: number | null = null;
     let loadedCheerio = null;
 
-    const urlMatch = chapterPath.match(/serie-(\d+)\/[^/]+\/chapter-(\d+)/);
+    const urlMatch = chapterPath.match(/(?:serie|novel)-?(\d+)\/[^/]+\/chapter-(\d+)/);
     if (urlMatch) {
       rawId = parseInt(urlMatch[1], 10);
       chapterNo = parseInt(urlMatch[2], 10);
@@ -536,15 +576,8 @@ class WTRLAB implements Plugin.PluginBase {
       throw new Error(errorMsg);
     }
     let chapterContent = parsedJson.data.data.body;
-    let chapterGlossary = {} as JSON;
-    if (
-      Object.prototype.hasOwnProperty.call(
-        parsedJson.data.data,
-        'glossary_data',
-      )
-    ) {
-      chapterGlossary = parsedJson.data.data.glossary_data;
-    }
+    const chapterGlossary: ChapterContent['glossary_data'] | undefined =
+      parsedJson?.data?.data?.glossary_data;
 
     let htmlString = '';
 
@@ -571,19 +604,14 @@ class WTRLAB implements Plugin.PluginBase {
       htmlString += `<p style="color:darkred;">${eLog}</p>`;
     }
 
-    let dictionary = [];
-    if (Object.prototype.hasOwnProperty.call(chapterGlossary, 'terms')) {
-      dictionary = Object.fromEntries(
-        chapterGlossary.terms.map((definition, index) => [
-          `※${index}⛬`,
-          definition[0],
-        ]),
-      );
-    }
+    const dictionary = chapterGlossary?.terms?.map(t => t[0]) || [];
 
     for (let text of chapterContent) {
-      if (Object.keys(dictionary).length > 0) {
-        text = text.replaceAll(/※[0-9]+⛬/g, m => dictionary[m]);
+      if (dictionary.length > 0) {
+        text = text.replaceAll(
+          /(?:wtr-lab\s+)?※([0-9]+)[⛬〓]/g,
+          (m: string, index: string) => dictionary[parseInt(index)] || m,
+        );
       }
       htmlString += `<p>${text}</p>`;
     }
@@ -593,41 +621,58 @@ class WTRLAB implements Plugin.PluginBase {
 
   async fetchAllChapters(
     rawId: number,
-    totalChapters: number,
     slug: string,
   ): Promise<Plugin.ChapterItem[]> {
     const allChapters: Plugin.ChapterItem[] = [];
-    const batchSize = 250;
+    const batchSize = 500;
+    let start = 1;
+    let hasMore = true;
 
-    for (let start = 1; start <= totalChapters; start += batchSize) {
-      const end = Math.min(start + batchSize - 1, totalChapters);
+    while (hasMore) {
+      const end = start + batchSize - 1;
 
       try {
         const response = await fetchApi(
           `${this.site}api/chapters/${rawId}?start=${start}&end=${end}`,
+          {
+            headers: {
+              ...this.headers,
+            },
+          },
         );
 
         const data = await response.json();
+        const chapters = data.chapters ?? data.data?.chapters ?? [];
 
-        if (data.chapters && Array.isArray(data.chapters)) {
-          const batchChapters: Plugin.ChapterItem[] = data.chapters.map(
-            (apiChapter: ApiChapter) => ({
-              name: apiChapter.title,
-              path: `${this.sourceLang}serie-${rawId}/${slug}/chapter-${apiChapter.order}`,
-              releaseTime: apiChapter.updated_at?.substring(0, 10),
-              chapterNumber: apiChapter.order,
-            }),
-          );
-
-          allChapters.push(...batchChapters);
-        }
-
-        if (!data.chapters || data.chapters.length < batchSize) {
+        if (!Array.isArray(chapters) || chapters.length === 0) {
+          hasMore = false;
           break;
         }
+
+        const batchChapters: Plugin.ChapterItem[] = chapters.map(
+          (apiChapter: ApiChapter) => ({
+            name:
+              apiChapter.title ||
+              apiChapter.name ||
+              `Chapter ${apiChapter.order}`,
+            path: `${this.sourceLang}serie-${rawId}/${slug}/chapter-${apiChapter.order}`,
+            releaseTime: apiChapter.updated_at?.substring(0, 10),
+            chapterNumber: apiChapter.order,
+          }),
+        );
+
+        allChapters.push(...batchChapters);
+
+        if (chapters.length < batchSize) {
+          hasMore = false;
+          break;
+        }
+
+        start += batchSize;
       } catch (error) {
         console.error(`Failed to fetch chapters ${start}-${end}:`, error);
-        continue;
+        hasMore = false;
+        break;
       }
     }
 
@@ -1716,18 +1761,21 @@ type ApiChapter = {
   updated_at: string;
 };
 
-type GlossaryTerm = {
-  index: number;
-  english: string;
-  chinese: string;
-  symbol: string;
-};
+// type GlossaryTerm = {
+//   index: number;
+//   english: string;
+//   chinese: string;
+//   symbol: string;
+// };
 type ChapterData = {
   data: ChapterContent;
 };
 type ChapterContent = {
   title: string;
   body: string;
+  glossary_data?: {
+    terms: string[][];
+  };
 };
 
 type SerieData = {

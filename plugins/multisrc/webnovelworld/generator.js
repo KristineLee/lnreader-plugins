@@ -12,10 +12,10 @@ export const generateAll = function () {
       const filters = readFileSync(
         join(folder, 'filters', source.id + '.json'),
       );
-      source.filters = JSON.parse(filters);
+      source.filters = JSON.parse(filters).filters;
     }
     console.log(
-      `[lightnovelworld] Generating: ${source.id}${' '.repeat(20 - source.id.length)} ${source.filters ? '🔎with filters🔍' : '🚫no filters🚫'}`,
+      `[webnovelworld] Generating: ${source.id}${' '.repeat(20 - source.id.length)} ${source.filters ? '🔎with filters🔍' : '🚫no filters🚫'}`,
     );
     return generator(source);
   });
@@ -28,7 +28,7 @@ const generator = function generator(source) {
 
   const pluginScript = `
 ${LightNovelWPTemplate}
-const plugin = new LightNovelWorld(${JSON.stringify(source)});
+const plugin = new WebNovelWorld(${JSON.stringify(source)});
 export default plugin;
     `.trim();
 

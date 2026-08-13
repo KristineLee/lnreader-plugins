@@ -13,7 +13,6 @@
     "sourceSite": "https://lunarletters.com/",
     "sourceName": "LunarLetters",
     "options": {
-      "versionIncrements": 1,
       "useNewChapterEndpoint": true
     }
   },
@@ -39,7 +38,8 @@
     "sourceName": "DaoNovel",
     "options": {
       "useNewChapterEndpoint": true,
-      "versionIncrements": 1
+      "down": true,
+      "downSince": 1777153113000
     }
   },
   {
@@ -67,8 +67,7 @@
     "sourceName": "ArNovel",
     "options": {
       "useNewChapterEndpoint": true,
-      "lang": "Arabic",
-      "versionIncrements": 2
+      "lang": "Arabic"
     }
   },
   {
@@ -77,8 +76,7 @@
     "sourceName": "MeioNovel",
     "options": {
       "useNewChapterEndpoint": true,
-      "lang": "Indonesian",
-      "versionIncrements": 1
+      "lang": "Indonesian"
     }
   },
   {
@@ -120,7 +118,6 @@
     "sourceName": "Vanovel",
     "options": {
       "useNewChapterEndpoint": true,
-      "versionIncrements": 3,
       "lang": "Indonesian"
     }
   },
@@ -130,8 +127,7 @@
     "sourceName": "HizoManga",
     "options": {
       "useNewChapterEndpoint": true,
-      "lang": "Arabic",
-      "versionIncrements": 2
+      "lang": "Arabic"
     }
   },
   {
@@ -141,7 +137,6 @@
     "options": {
       "useNewChapterEndpoint": true,
       "lang": "Arabic",
-      "versionIncrements": 6,
       "customJs": "chapterText.find('span[style*=\"opacity: 0; position: fixed;\"],[role=\"presentation\"]').remove();"
     }
   },
@@ -150,7 +145,9 @@
     "sourceSite": "https://novel4up.com/",
     "sourceName": "Novel4Up",
     "options": {
-      "lang": "Arabic"
+      "lang": "Arabic",
+      "down": true,
+      "downSince": 1777153113000
     }
   },
   {
@@ -190,7 +187,6 @@
     "sourceName": "MTL-Novel",
     "options": {
       "useNewChapterEndpoint": false,
-      "versionIncrements": 1,
       "down": true,
       "downSince": 1768289212922
     }
@@ -268,8 +264,7 @@
     "sourceSite": "https://srankmanga.com/",
     "sourceName": "Srank Manga",
     "options": {
-      "useNewChapterEndpoint": true,
-      "versionIncrements": 1
+      "useNewChapterEndpoint": true
     }
   },
   {
@@ -321,8 +316,7 @@
     "sourceName": "Azora",
     "options": {
       "useNewChapterEndpoint": true,
-      "lang": "Arabic",
-      "versionIncrements": 1
+      "lang": "Arabic"
     }
   },
   {
@@ -340,8 +334,7 @@
     "sourceName": "Dragon Tea",
     "options": {
       "useNewChapterEndpoint": true,
-      "lang": "English",
-      "versionIncrements": 1
+      "lang": "English"
     }
   },
   {
@@ -370,7 +363,6 @@
     "sourceName": "Galaxy Translations",
     "options": {
       "useNewChapterEndpoint": true,
-      "versionIncrements": 3,
       "lang": "English",
       "down": true,
       "downSince": 1768289212909
@@ -400,7 +392,6 @@
     "sourceSite": "https://citrusaurora.com/",
     "sourceName": "Citrus Aurora",
     "options": {
-      "versionIncrements": 1,
       "useNewChapterEndpoint": true,
       "lang": "English"
     }
@@ -420,7 +411,9 @@
     "sourceName": "Belle Reservoir",
     "options": {
       "useNewChapterEndpoint": true,
-      "lang": "English"
+      "lang": "English",
+      "down": true,
+      "downSince": 1777153113000
     }
   },
   {
@@ -429,8 +422,7 @@
     "sourceName": "Traducciones Amistosas",
     "options": {
       "useNewChapterEndpoint": true,
-      "lang": "Spanish",
-      "versionIncrements": 1
+      "lang": "Spanish"
     }
   },
   {
@@ -439,7 +431,9 @@
     "sourceName": "Coral Boutique",
     "options": {
       "useNewChapterEndpoint": true,
-      "lang": "English"
+      "lang": "English",
+      "down": true,
+      "downSince": 1777153113000
     }
   },
   {
@@ -515,8 +509,7 @@
     "sourceName": "Fortune Eternal",
     "options": {
       "lang": "Korean",
-      "useNewChapterEndpoint": true,
-      "versionIncrements": 2
+      "useNewChapterEndpoint": true
     }
   },
   {
@@ -642,18 +635,28 @@
     }
   },
   {
-    "id": "markazriwayat",
-    "sourceSite": "https://markazriwayat.com/",
-    "sourceName": "Markazriwayat",
+    "id": "lullobox",
+    "sourceSite": "https://lullobox.com/",
+    "sourceName": "LulloBox",
     "options": {
-      "lang": "Arabic",
+      "lang": "English",
       "useNewChapterEndpoint": true
     }
   },
   {
-    "id": "lullobox",
-    "sourceSite": "https://lullobox.com/",
-    "sourceName": "LulloBox",
+    "id": "boxnovel",
+    "sourceSite": "https://novelnice.com/",
+    "sourceName": "BoxNovel",
+    "options": {
+      "lang": "English",
+      "useNewChapterEndpoint": true,
+      "versionIncrements": 2
+    }
+  },
+  {
+    "id": "novelnice",
+    "sourceSite": "https://novelnice.com/",
+    "sourceName": "Novel Nice",
     "options": {
       "lang": "English",
       "useNewChapterEndpoint": true

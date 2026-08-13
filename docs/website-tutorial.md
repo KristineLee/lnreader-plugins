@@ -23,16 +23,27 @@ The testing website provides five main sections to test different plugin functio
 - **Headers** - Configure custom HTTP headers
 - **Popular Novels** - Test `popularNovels()` with pagination and filters
 - **Search Novels** - Test `searchNovels()` with search queries
-- **Parse Novel** - Test `parseNovel()` with a novel URL
-- **Parse Chapter** - Test `parseChapter()` with a chapter URL
+- **Parse Novel** - Test `parseNovel()` with a novel path
+- **Parse Chapter** - Test `parseChapter()` with a chapter path
 
 ## Pre-Submission Testing
 
-Before submitting your plugin, verify that all five sections work without errors, multiple pages load, search returns accurate results, novel parsing extracts all metadata, chapter content is clean, filters work (if implemented), no console errors appear, URLs are properly formatted, and images load correctly.
+Before submitting your plugin, verify that:
+
+- All five sections work without errors
+- Multiple pages load correctly
+- Search returns accurate results
+- Novel parsing extracts all metadata
+- Chapter content is clean
+- Filters work (if implemented)
+- No console errors appear
+- Paths are properly formatted
+- Images load correctly
 
 ## Need Help?
 
 - **Plugin Development:** See [docs.md](./docs.md) for API reference
 - **Quick Start:** See [quickstart.md](./quickstart.md) for plugin creation
+- **Pre-PR Check:** See [testing.md](./testing.md) for the required `npm run check:plugin` live check
 - **Issues:** Create a [GitHub issue](https://github.com/LNReader/lnreader-plugins/issues/new)
 - **Community:** Join us on [Discord](https://discord.gg/QdcWN4MD63)

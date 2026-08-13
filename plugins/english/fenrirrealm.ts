@@ -1,6 +1,5 @@
 import { fetchApi } from '@libs/fetch';
 import { Plugin } from '@/types/plugin';
-import { Node } from 'domhandler';
 import { load as loadCheerio } from 'cheerio';
 import { Filters, FilterTypes } from '@libs/filterInputs';
 import { storage } from '@libs/storage';
@@ -13,6 +12,10 @@ type APINovel = {
   description: string;
   status: string;
   genres: { name: string }[];
+  user?: {
+    username?: string;
+    name?: string;
+  };
 };
 
 type APIChapter = {
@@ -35,12 +38,44 @@ type ChapterInfo = {
   chapterNumber: number;
 };
 
+type Chapter = {
+  type: string;
+  content: {
+    type: string;
+    attrs?: Attrs;
+    content: {
+      type: string;
+      text?: string;
+      marks?: {
+        type: string;
+        attrs?: Attrs;
+      }[];
+    }[];
+  }[];
+};
+
+type Attrs = {
+  textAlign?: string;
+  href?: string;
+  level?: number;
+};
+
+type Nodes = {
+  type: string;
+  nodes?: {
+    type: string;
+    // couldnt find the sveltekit so disable eslint here
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    data: any[];
+  }[];
+};
+
 class FenrirRealmPlugin implements Plugin.PluginBase {
   id = 'fenrir';
   name = 'Fenrir Realm';
   icon = 'src/en/fenrirrealm/icon.png';
   site = 'https://fenrirealm.com';
-  version = '1.0.13';
+  version = '1.1.2';
   imageRequestInit?: Plugin.ImageRequestInit | undefined = undefined;
 
   hideLocked = storage.get('hideLocked');
@@ -62,14 +97,16 @@ class FenrirRealmPlugin implements Plugin.PluginBase {
       filters,
     }: Plugin.PopularNovelsOptions<typeof this.filters>,
   ): Promise<Plugin.NovelItem[]> {
-    // let sort = "updated";
-    let sort = filters.sort.value;
-    if (showLatestNovels) sort = 'latest';
-    const genresFilter = filters.genres.value
-      .map(g => '&genres%5B%5D=' + g)
-      .join('');
+    const params = new URLSearchParams({
+      page: pageNo.toString(),
+      per_page: '20',
+      status: filters.status.value,
+      order: showLatestNovels ? 'latest' : filters.sort.value,
+    });
+    filters.genres.value.forEach(g => params.append('genres[]', g));
+
     const res = await fetchApi(
-      `${this.site}/api/series/filter?page=${pageNo}&per_page=20&status=${filters.status.value}&order=${sort}${genresFilter}`,
+      `${this.site}/api/series/filter?${params.toString()}`,
     ).then(r =>
       r.json().catch(() => {
         throw new Error(
@@ -90,7 +127,7 @@ class FenrirRealmPlugin implements Plugin.PluginBase {
 
     if (!apiRes.ok) {
       const slugMatch = novelPath.match(/^\d+-(.+)$/);
-      let searchSlug = slugMatch ? slugMatch[1] : novelPath;
+      const searchSlug = slugMatch ? slugMatch[1] : novelPath;
       apiRes = await fetchApi(
         `${this.site}/api/new/v2/series/${searchSlug}/chapters`,
         {},
@@ -120,7 +157,7 @@ class FenrirRealmPlugin implements Plugin.PluginBase {
       }
     }
 
-    const seriesData = await fetchApi(
+    const seriesData: APINovel = await fetchApi(
       `${this.site}/api/new/v2/series/${cleanNovelPath}`,
     ).then(r => r.json());
     const summaryCheerio = loadCheerio(seriesData.description || '');
@@ -131,7 +168,7 @@ class FenrirRealmPlugin implements Plugin.PluginBase {
       summary:
         summaryCheerio('p').length > 0
           ? summaryCheerio('p')
-              .map((i, el) => loadCheerio(el).text())
+              .map((_, el) => loadCheerio(el).text())
               .get()
               .join('\n\n')
           : summaryCheerio.text() || '',
@@ -139,7 +176,7 @@ class FenrirRealmPlugin implements Plugin.PluginBase {
       cover: seriesData.cover
         ? this.site + '/' + seriesData.cover
         : defaultCover,
-      genres: (seriesData.genres || []).map((g: any) => g.name).join(','),
+      genres: (seriesData.genres || []).map(g => g.name).join(','),
       status: seriesData.status || 'Unknown',
     };
 
@@ -184,45 +221,78 @@ class FenrirRealmPlugin implements Plugin.PluginBase {
       const content = json.content;
 
       if (content) {
-        const parsedContent = JSON.parse(content);
-        if (parsedContent.type === 'doc') {
-          return parsedContent.content
-            .map((node: any) => {
-              if (node.type === 'paragraph') {
-                const innerHtml =
-                  node.content
-                    ?.map((c: any) => {
-                      if (c.type === 'text') {
-                        let text = c.text;
-                        if (c.marks) {
-                          for (const mark of c.marks) {
-                            if (mark.type === 'bold') text = `<b>${text}</b>`;
-                            if (mark.type === 'italic') text = `<i>${text}</i>`;
-                            if (mark.type === 'underline')
-                              text = `<u>${text}</u>`;
-                            if (mark.type === 'strike')
-                              text = `<strike>${text}</strike>`;
-                            if (mark.type === 'link')
-                              text = `<a href="${mark.attrs?.href}">${text}</a>`;
+        try {
+          // Attempt 1: Handle legacy stringified TipTap JSON AST schema
+          const parsedContent: Chapter = JSON.parse(content);
+          if (parsedContent.type === 'doc') {
+            return parsedContent.content
+              .map(node => {
+                if (node.type === 'paragraph') {
+                  const innerHtml =
+                    node.content
+                      ?.map(c => {
+                        if (c.type === 'text') {
+                          let text = c.text;
+                          if (c.marks) {
+                            for (const mark of c.marks) {
+                              if (mark.type === 'bold') text = `<b>${text}</b>`;
+                              if (mark.type === 'italic')
+                                text = `<i>${text}</i>`;
+                              if (mark.type === 'underline')
+                                text = `<u>${text}</u>`;
+                              if (mark.type === 'strike')
+                                text = `<strike>${text}</strike>`;
+                              if (mark.type === 'link')
+                                text = `<a href="${mark.attrs?.href}">${text}</a>`;
+                            }
                           }
+                          return text;
                         }
-                        return text;
-                      }
-                      if (c.type === 'hardBreak') return '<br>';
-                      return '';
-                    })
-                    .join('') || '';
-                return `<p>${innerHtml}</p>`;
-              }
-              if (node.type === 'heading') {
-                const level = node.attrs?.level || 1;
-                const innerHtml =
-                  node.content?.map((c: any) => c.text).join('') || '';
-                return `<h${level}>${innerHtml}</h${level}>`;
-              }
-              return '';
-            })
-            .join('\n');
+                        if (c.type === 'hardBreak') return '<br>';
+                        return '';
+                      })
+                      .join('') || '';
+                  return `<p>${innerHtml}</p>`;
+                }
+                if (node.type === 'heading') {
+                  const level = node.attrs?.level || 1;
+                  const innerHtml =
+                    node.content?.map(c => c.text).join('') || '';
+                  return `<h${level}>${innerHtml}</h${level}>`;
+                }
+                return '';
+              })
+              .join('\n');
+          }
+        } catch {
+          /**
+           * HTML Response Cleaner:
+           * Fenrir Realm inserts anti-scraping & watermark elements:
+           * 1. Scramble hidden divs (`div[aria-hidden="true"]`)
+           * 2. Inline `<style>` blocks
+           * 3. Reader attributions / Copy references (`.reader-attribution`, `[data-fr-attr]`)
+           */
+          const $ = loadCheerio(content);
+
+          // Remove anti-scraping tags and inline CSS
+          $('div[aria-hidden="true"]').remove();
+          $('p[aria-hidden="true"]').remove();
+          $('.reader-attribution').remove();
+          $('[data-fr-attr]').remove();
+          $('style').remove();
+
+          // Target any remaining text elements containing copy references or bookmarks
+          $('p, div, span, small').each((_, el) => {
+            const text = $(el).text().trim();
+            if (
+              text.startsWith('Copy reference:') ||
+              text.startsWith('Bookmark:')
+            ) {
+              $(el).remove();
+            }
+          });
+
+          return $.html() || content;
         }
       }
     }
@@ -234,9 +304,20 @@ class FenrirRealmPlugin implements Plugin.PluginBase {
 
     const loadedCheerio = loadCheerio(body);
 
-    let chapterText = loadedCheerio('div.content-area p')
-      .map((i, el) => `<p>${loadCheerio(el).html()}</p>`)
+    // Clean up anti-scraping and watermark elements first
+    loadedCheerio('[aria-hidden="true"]').remove();
+    loadedCheerio('.reader-attribution').remove();
+    loadedCheerio('[data-fr-attr]').remove();
+
+    let chapterText = loadedCheerio(
+      '.reader-area p, div.content-area p, [id^="reader-area"] p',
+    )
+      .map((_, el) => {
+        const html = loadedCheerio(el).html()?.trim();
+        return html ? `<p>${html}</p>` : '';
+      })
       .get()
+      .filter(Boolean)
       .join('\n');
 
     if (chapterText) {
@@ -247,24 +328,24 @@ class FenrirRealmPlugin implements Plugin.PluginBase {
     try {
       const jsonUrl = `${this.site}/series/${chapterPath.split('~~')[0]}/__data.json?x-sveltekit-invalidated=001`;
       const jsonRes = await fetchApi(jsonUrl);
-      const json = await jsonRes.json();
+      const json: Nodes = await jsonRes.json();
 
       const nodes = json.nodes;
-      const data = nodes?.find((n: any) => n.type === 'data')?.data;
+      const data = nodes?.find(n => n.type === 'data')?.data;
       if (data) {
         const contentStr = data.find(
-          (d: any) => typeof d === 'string' && d.includes('{"type":"doc"'),
+          d => typeof d === 'string' && d.includes('{"type":"doc"'),
         );
 
         if (contentStr) {
-          const contentJson = JSON.parse(contentStr);
+          const contentJson: Chapter = JSON.parse(contentStr);
           if (contentJson.type === 'doc') {
             chapterText = contentJson.content
-              .map((node: any) => {
+              .map(node => {
                 if (node.type === 'paragraph') {
                   const innerHtml =
                     node.content
-                      ?.map((c: any) => {
+                      ?.map(c => {
                         if (c.type === 'text') {
                           let text = c.text;
                           if (c.marks) {
@@ -330,8 +411,9 @@ class FenrirRealmPlugin implements Plugin.PluginBase {
     };
   }
 
-  resolveUrl = (path: string, isNovel?: boolean) =>
-    this.site + '/series/' + path.split('~~')[0];
+  resolveUrl(path: string): string {
+    return `${this.site}/series/${path.split('~~')[0]}`;
+  }
 
   filters = {
     status: {

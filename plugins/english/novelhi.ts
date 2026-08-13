@@ -3,13 +3,14 @@ import { Plugin } from '@/types/plugin';
 import { load as parseHTML } from 'cheerio';
 import { NovelStatus } from '@libs/novelStatus';
 import { defaultCover } from '@libs/defaultCover';
+import { Filters, FilterTypes } from '@libs/filterInputs';
 
 class NovelHi implements Plugin.PluginBase {
   id = 'novelhi';
   name = 'NovelHi';
   icon = 'src/en/novelhi/icon.png';
   site = 'https://novelhi.com/';
-  version = '1.0.0';
+  version = '1.1.1';
 
   // flag indicates whether access to LocalStorage, SesesionStorage is required.
   webStorageUtilized?: boolean;
@@ -17,8 +18,25 @@ class NovelHi implements Plugin.PluginBase {
   // Cache for storing extended metadata from the list API | ie: copypasta from readfrom.ts
   loadedNovelCache: CachedNovel[] = [];
 
-  parseNovels(novels: NovelData[]): CachedNovel[] {
-    const ret: CachedNovel[] = novels.map(item => ({
+  private async getNovels(
+    pageNo: number,
+    keyword: string | undefined,
+    filters?: Plugin.PopularNovelsOptions<typeof this.filters>['filters'],
+  ): Promise<CachedNovel[]> {
+    const params = new URLSearchParams({
+      curr: pageNo.toString(),
+      limit: '10',
+      ...(keyword && { keyword }),
+      ...(filters?.genres.value && { 'bookGenres[]': filters.genres.value }),
+      ...(filters?.order.value && { bookStatus: filters.order.value }),
+      ...(filters?.time.value && { updatePeriod: filters.time.value }),
+    });
+
+    const url = `${this.site}book/searchByPageInShelf?${params}`;
+    const response = await fetchApi(url);
+    const json: ApiResponse = await response.json();
+
+    const novels: CachedNovel[] = json.data.list.map(item => ({
       name: item.bookName,
       path: `s/${item.simpleName}`,
       cover: item.picUrl || defaultCover,
@@ -28,30 +46,19 @@ class NovelHi implements Plugin.PluginBase {
       genres: item.genres.map(g => g.genreName).join(', '),
     }));
 
-    // Manage cache size
-    this.loadedNovelCache.push(...ret);
+    this.loadedNovelCache.push(...novels);
     if (this.loadedNovelCache.length > 100) {
       this.loadedNovelCache = this.loadedNovelCache.slice(-100);
     }
 
-    return ret;
+    return novels;
   }
 
   async popularNovels(
     pageNo: number,
-    { showLatestNovels }: Plugin.PopularNovelsOptions,
-  ): Promise<Plugin.NovelItem[]> {
-    const params = new URLSearchParams();
-
-    params.append('curr', `${pageNo}`);
-    params.append('limit', '10');
-    params.append('keyword', '');
-
-    const jsonUrl = `${this.site}book/searchByPageInShelf?` + params.toString();
-    const response = await fetchApi(jsonUrl);
-    const json: ApiResponse = await response.json();
-
-    return this.parseNovels(json.data.list);
+    { filters }: Plugin.PopularNovelsOptions<typeof this.filters>,
+  ): Promise<CachedNovel[]> {
+    return this.getNovels(pageNo, undefined, filters);
   }
 
   async parseNovel(novelPath: string): Promise<Plugin.SourceNovel> {
@@ -67,7 +74,10 @@ class NovelHi implements Plugin.PluginBase {
 
     const novel: Plugin.SourceNovel = {
       path: novelPath,
-      name: loadedCheerio('meta[name=keywords]').attr('content') || 'Untitled',
+      name:
+        loadedCheerio('b.layui-icon').text().trim() ||
+        loadedCheerio('.tit h1').text().trim() ||
+        'Untitled',
       cover: loadedCheerio('.cover,.decorate-img').attr('src') || defaultCover,
     };
 
@@ -119,10 +129,43 @@ class NovelHi implements Plugin.PluginBase {
     const result = await fetchApi(url).then(res => res.text());
 
     const loadedCheerio = parseHTML(result);
+    const path = loadedCheerio('#chapterContentPath').attr('value');
+    const token = loadedCheerio('#chapterContentToken').attr('value');
+
+    if (!path || !token) return '';
+
+    const contentPath = new URL(path, this.site).href;
+    const content: ApiContent = await fetchApi(
+      `${contentPath}?token=${token}`,
+      {
+        headers: {
+          'Referer': url,
+          'X-Requested-With': 'XMLHttpRequest',
+        },
+      },
+    ).then(r => r.json());
+
+    if (content) {
+      const rot13 = content.data.content.replace(
+        /(<[^>]+>)|([a-zA-Z])/g,
+        (_, tag, char) => {
+          if (tag) return tag;
+
+          const base = char <= 'Z' ? 65 : 97;
+          const shift = ((char.charCodeAt(0) - base + 13) % 26) + base;
+          return String.fromCharCode(shift);
+        },
+      );
+      const chapter = rot13
+        .replace(/<sent\b/gi, '<p')
+        .replace(/<\/sent>/gi, '</p>')
+        .replace(/<br\s*\/?>/gi, '');
+      loadedCheerio('#showReading').html(chapter);
+    }
     loadedCheerio('#showReading script,ins').remove();
     const chapterText = loadedCheerio('#showReading').html();
     if (!chapterText) {
-      return loadedCheerio('#translate <').html() || '';
+      return loadedCheerio('#translate').parent().html() || '';
     }
     return chapterText;
   }
@@ -130,19 +173,71 @@ class NovelHi implements Plugin.PluginBase {
   async searchNovels(
     searchTerm: string,
     pageNo: number,
-  ): Promise<Plugin.NovelItem[]> {
-    const params = new URLSearchParams();
-
-    params.append('curr', `${pageNo}`);
-    params.append('limit', '10');
-    params.append('keyword', `${searchTerm}`);
-
-    const jsonUrl = `${this.site}book/searchByPageInShelf?` + params.toString();
-    const response = await fetchApi(jsonUrl);
-    const json: ApiResponse = await response.json();
-
-    return this.parseNovels(json.data.list);
+  ): Promise<CachedNovel[]> {
+    return this.getNovels(pageNo, searchTerm);
   }
+
+  filters = {
+    genres: {
+      label: 'Genres',
+      value: '',
+      options: [
+        { label: 'All', value: '' },
+        { label: 'Action', value: 'action' },
+        { label: 'Adventure', value: 'adventure' },
+        { label: 'Comedy', value: 'comedy' },
+        { label: 'Light Novel', value: 'light-novel' },
+        { label: 'Fanfiction', value: 'fanfiction' },
+        { label: 'Fantasy', value: 'fantasy' },
+        { label: 'Game', value: 'game' },
+        { label: 'Gender Bender', value: 'gender-bender' },
+        { label: 'Harem', value: 'harem' },
+        { label: 'Historical', value: 'historical' },
+        { label: 'Horror', value: 'horror' },
+        { label: 'Martial Arts', value: 'martial-arts' },
+        { label: 'Mature', value: 'mature' },
+        { label: 'Mecha', value: 'mecha' },
+        { label: 'Military', value: 'military' },
+        { label: 'Mystery', value: 'mystery' },
+        { label: 'Romance', value: 'romance' },
+        { label: 'School Life', value: 'school-life' },
+        { label: 'Sci-fi', value: 'sci-fi' },
+        { label: 'Slice of Life', value: 'slice-of-life' },
+        { label: 'Sports', value: 'sports' },
+        { label: 'Supernatural', value: 'supernatural' },
+        { label: 'Tragedy', value: 'tragedy' },
+        { label: 'Urban Life', value: 'urban-life' },
+        { label: 'Wuxia', value: 'wuxia' },
+        { label: 'Xianxia', value: 'xianxia' },
+        { label: 'Xuanhuan', value: 'xuanhuan' },
+        { label: 'Yaoi', value: 'yaoi' },
+        { label: 'Yuri', value: 'yuri' },
+      ],
+      type: FilterTypes.Picker,
+    },
+    order: {
+      label: 'Status',
+      value: '',
+      options: [
+        { label: 'All', value: '' },
+        { label: 'Ongoing', value: '0' },
+        { label: 'Completed', value: '1' },
+      ],
+      type: FilterTypes.Picker,
+    },
+    time: {
+      label: 'Update Period',
+      value: '',
+      options: [
+        { label: 'All', value: '' },
+        { label: '3 Days', value: '3' },
+        { label: '7 Days', value: '7' },
+        { label: '15 Days', value: '15' },
+        { label: '30 Days', value: '30' },
+      ],
+      type: FilterTypes.Picker,
+    },
+  } satisfies Filters;
 }
 
 export default new NovelHi();
@@ -196,5 +291,12 @@ type ApiChapter = {
     pageSize: string;
     total: string;
     list: ChapterData[];
+  };
+};
+
+type ApiContent = {
+  code: number;
+  data: {
+    content: string;
   };
 };

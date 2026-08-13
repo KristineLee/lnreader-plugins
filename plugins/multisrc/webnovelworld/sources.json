@@ -1,0 +1,29 @@
+[
+    {
+        "id": "webnovelworld",
+        "sourceName": "Web Novel Pub",
+        "sourceSite": "https://www.webnovelworld.org/",
+        "options": {
+            "down": true,
+            "downSince": 1768289212945
+        }
+    },
+    {
+        "id": "lightnovelpubvip",
+        "sourceName": "LightNovelPub Vip",
+        "sourceSite": "https://lightnovelpub.vip/",
+        "options": {
+            "down": true,
+            "downSince": 1768289212945
+        }
+    },
+    {
+        "id": "lightnovelcave",
+        "sourceName": "LightNovelCave",
+        "sourceSite": "https://www.lightnovelcave.com/",
+        "options": {
+            "down": true,
+            "downSince": 1768289212945
+        }
+    }
+]
