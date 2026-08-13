@@ -12,8 +12,11 @@ class NovelBuddy implements Plugin.PluginBase {
   name = 'NovelBuddy';
   site = 'https://novelbuddy.me/';
   api = 'https://api.novelbuddy.me/';
-  version = '2.1.3';
+  version = '2.1.4';
   icon = 'src/en/novelbuddy/icon.png';
+  // The search API rejects any `q` longer than this with a misleading
+  // "must be between 1 and 200 characters" error, so trim before sending.
+  maxSearchQueryLength = 50;
 
   parseNovels(body: Response): Plugin.NovelItem[] {
     return body.data.items.map(item => ({
@@ -47,7 +50,9 @@ class NovelBuddy implements Plugin.PluginBase {
       sort: String(orderBy.value),
       page: String(pageNo),
       limit: '24',
-      q: keyword.value || undefined,
+      q: keyword.value
+        ? keyword.value.trim().slice(0, this.maxSearchQueryLength)
+        : undefined,
     };
 
     const params = new URLSearchParams();
@@ -190,7 +195,7 @@ class NovelBuddy implements Plugin.PluginBase {
     page: number,
   ): Promise<Plugin.NovelItem[]> {
     const params = new URLSearchParams({
-      'q': searchTerm,
+      'q': searchTerm.trim().slice(0, this.maxSearchQueryLength),
       'limit': '24',
       'page': page.toString(),
     });

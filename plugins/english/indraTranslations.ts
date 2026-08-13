@@ -51,8 +51,10 @@ class IndraTranslations implements Plugin.PluginBase {
   }
 
   /**
-   * Indra can render results in different templates.
-   * This tries multiple layouts and returns a single unified list.
+   * The site was rebuilt on a custom theme (no longer Madara/WP-manga).
+   * Novel cards are `<div class="series-card">` with the destination URL
+   * embedded in an `onclick="location.href='...'"` attribute instead of a
+   * plain `<a href>`.
    */
   private parseNovelCards($: ReturnType<typeof load>) {
     const out: { name: string; path: string; cover?: string }[] = [];
@@ -64,7 +66,6 @@ class IndraTranslations implements Plugin.PluginBase {
         .replace(this.site, '')
         .trim();
       if (!cleanName || !cleanPath) return;
-      if (!cleanPath.includes('/series/')) return;
 
       // Normalize trailing slash for consistency
       const normalized = cleanPath.endsWith('/') ? cleanPath : cleanPath + '/';
@@ -78,87 +79,24 @@ class IndraTranslations implements Plugin.PluginBase {
       });
     };
 
-    // -------- Layout A (Madara-style): .page-item-detail ----------
-    $('.page-item-detail').each((_, el) => {
-      const a = $(el).find('a[href*="/series/"]').first();
-      const href = a.attr('href') || '';
-      const title =
-        this.clean(a.attr('title')) ||
-        this.clean($(el).find('h3 a').text()) ||
-        this.clean($(el).find('.post-title a').text());
-
-      const img =
-        $(el).find('img').attr('data-src') ||
-        $(el).find('img').attr('data-lazy-src') ||
-        $(el).find('img').attr('src');
-
-      if (href) push(title, href, img || undefined);
-    });
-
-    // -------- Layout B (common search tabs): .c-tabs-item__content ----------
-    $('.c-tabs-item__content').each((_, el) => {
-      const a =
-        $(el).find('a[href*="/series/"]').first() ||
-        $(el).find('.tab-thumb a[href*="/series/"]').first();
-
-      const href = a.attr?.('href') || '';
-      const title =
-        this.clean($(el).find('.post-title a').text()) ||
-        this.clean($(el).find('.tab-summary .post-title a').text()) ||
-        this.clean(a.attr?.('title')) ||
-        this.clean(a.text?.());
-
-      const img =
-        $(el).find('img').attr('data-src') ||
-        $(el).find('img').attr('data-lazy-src') ||
-        $(el).find('img').attr('src');
-
-      if (href) push(title, href, img || undefined);
-    });
-
-    // -------- Layout C (sometimes search results are in .row or .col wrappers) ----------
-    $('.row').each((_, el) => {
-      const a = $(el).find('a[href*="/series/"]').first();
-      const href = a.attr('href') || '';
+    $('.series-card').each((_, el) => {
+      const $el = $(el);
+      const onclick = $el.attr('onclick') || '';
+      const hrefMatch = onclick.match(/location\.href=['"]([^'"]+)['"]/);
+      const href = hrefMatch?.[1] || $el.find('a').first().attr('href') || '';
       if (!href) return;
 
       const title =
-        this.clean($(el).find('h3 a').text()) ||
-        this.clean($(el).find('.post-title a').text()) ||
-        this.clean(a.attr('title')) ||
-        this.clean(a.text());
+        this.clean($el.find('.series-card-title').attr('title')) ||
+        this.clean($el.find('.series-card-title').text());
 
       const img =
-        $(el).find('img').attr('data-src') ||
-        $(el).find('img').attr('data-lazy-src') ||
-        $(el).find('img').attr('src');
+        $el.find('img').attr('data-src') ||
+        $el.find('img').attr('data-lazy-src') ||
+        $el.find('img').attr('src');
 
       push(title, href, img || undefined);
     });
-
-    // -------- Layout D (fallback: any anchor to /series/) ----------
-    // If everything else fails but links exist, still return something.
-    if (out.length === 0) {
-      $('a[href*="/series/"]').each((_, el) => {
-        const a = $(el);
-        const href = a.attr('href') || '';
-        if (!href) return;
-
-        const title =
-          this.clean(a.attr('title')) || this.clean(a.text()) || 'Unknown';
-
-        // Try to find an image near the link
-        const img =
-          a.find('img').attr('data-src') ||
-          a.find('img').attr('data-lazy-src') ||
-          a.find('img').attr('src') ||
-          a.closest('*').find('img').first().attr('data-src') ||
-          a.closest('*').find('img').first().attr('data-lazy-src') ||
-          a.closest('*').find('img').first().attr('src');
-
-        push(title, href, img || undefined);
-      });
-    }
 
     return out;
   }
@@ -178,7 +116,7 @@ class IndraTranslations implements Plugin.PluginBase {
 
   async searchNovels(searchTerm: string, pageNo: number) {
     if (pageNo !== 1) return [];
-    const url = `${this.site}/?s=${encodeURIComponent(searchTerm)}&post_type=wp-manga`;
+    const url = `${this.site}/series/?keyword=${encodeURIComponent(searchTerm)}`;
     const html = await this.fetchHtml(url);
     const $ = load(html);
     return this.parseNovelCards($);
@@ -192,71 +130,78 @@ class IndraTranslations implements Plugin.PluginBase {
     const $ = load(html);
 
     const title =
-      this.clean($('h1.entry-title').text()) ||
+      this.clean($('h1.story-main-title').text()) ||
       this.clean($('h1').first().text()) ||
       'Unknown';
 
     const cover = this.absolute(
-      $('.summary_image img').attr('data-src') ||
-        $('.summary_image img').attr('data-lazy-src') ||
-        $('.summary_image img').attr('src'),
+      $('.story-cover-card img').attr('data-src') ||
+        $('.story-cover-card img').attr('data-lazy-src') ||
+        $('.story-cover-card img').attr('src'),
     );
 
     const summary =
-      this.clean($('.summary__content').text()) ||
-      this.clean($('.description-summary').text()) ||
+      this.clean($('#story-synopsis').text()) ||
+      this.clean($('.synopsis-wrapper').text()) ||
       undefined;
 
     let statusText = '';
-    $('.post-content_item').each((_, el) => {
+    $('.story-meta-list > div').each((_, el) => {
       const label = this.clean(
-        $(el).find('.summary-heading').text(),
+        $(el).find('.td-hero-subtext').first().text(),
       ).toLowerCase();
       if (label.includes('status')) {
-        statusText = this.clean($(el).find('.summary-content').text());
+        statusText = this.clean($(el).find('a').text());
       }
     });
+
+    const genres = $('.story-meta-list a[href*="/series-genre/"]')
+      .map((_, el) => this.clean($(el).text()))
+      .get()
+      .filter(Boolean)
+      .join(', ');
+
+    const author =
+      this.clean($('.story-meta-list a[href*="/tac-gia/"]').first().text()) ||
+      undefined;
 
     const chapters: { name: string; path: string; chapterNumber?: number }[] =
       [];
 
-    $('li.wp-manga-chapter a').each((_, el) => {
-      const href = $(el).attr('href');
-      if (!href) return;
-      const name = this.clean($(el).text());
-      chapters.push({
-        name,
-        path: href.replace(this.site, ''),
-        chapterNumber: this.chapterNum(name),
-      });
-    });
-
-    if (chapters.length === 0) {
-      $('.wp-manga-chapter a').each((_, el) => {
+    $('#chapter-list-container a.chap-item, .chapter-item-wrapper a').each(
+      (_, el) => {
         const href = $(el).attr('href');
         if (!href) return;
-        const name = this.clean($(el).text());
+        const name = this.clean(
+          $(el).find('span').first().text() || $(el).text(),
+        );
+        const normalized = href.replace(this.site, '');
         chapters.push({
           name,
-          path: href.replace(this.site, ''),
+          path: normalized,
           chapterNumber: this.chapterNum(name),
         });
-      });
-    }
+      },
+    );
 
     chapters.sort((a, b) => (a.chapterNumber ?? 0) - (b.chapterNumber ?? 0));
 
     const statusLower = String(statusText).toLowerCase();
-    const status =
-      statusLower.includes('complete') || statusLower.includes('completed')
-        ? NovelStatus.Completed
-        : NovelStatus.Ongoing;
+    const status = statusLower.includes('complete')
+      ? NovelStatus.Completed
+      : statusLower.includes('hiatus')
+        ? NovelStatus.OnHiatus
+        : statusLower.includes('drop') || statusLower.includes('cancel')
+          ? NovelStatus.Cancelled
+          : NovelStatus.Ongoing;
 
     return {
       name: title,
       path: novelPath.endsWith('/') ? novelPath : novelPath + '/',
       cover,
       summary,
+      author,
+      genres: genres || undefined,
       status,
       chapters,
     };
@@ -269,17 +214,20 @@ class IndraTranslations implements Plugin.PluginBase {
     const html = await this.fetchHtml(url);
     const $ = load(html);
 
-    const content = $('.reading-content').first().length
-      ? $('.reading-content').first()
-      : $('.text-left').first().length
-        ? $('.text-left').first()
-        : $('.entry-content').first();
+    const content = $('#chapter-content-text').first().length
+      ? $('#chapter-content-text').first()
+      : $('.chapter-content').first();
 
     if (!content.length) {
       return `\nUnable to load chapter content.\n\n`;
     }
 
-    content.find('script, style, ins, iframe, noscript').remove();
+    // Site injects invisible "noise" spans (random strings, aria-hidden)
+    // into the text as an anti-scraping watermark — strip them along with
+    // ads/scripts so they don't pollute the chapter body.
+    content
+      .find('script, style, ins, iframe, noscript, .td-ad-wrapper, .td-s-noise')
+      .remove();
 
     return content.html() ?? '';
   }

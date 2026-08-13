@@ -52,21 +52,15 @@ class ChireadsPlugin implements Plugin.PluginBase {
           $ = await this.getCheerio(
             this.site + '/category/original/page/' + pageNo,
           );
-        let romans = $('.romans-content li');
-        if (!romans.length) romans = $('#content li');
-        romans.each((i, elem) => {
-          const novelName = $(elem)
-            .contents()
-            .find('div')
-            .first()
-            .text()
-            .trim();
-          const novelCover = $(elem)
-            .find('div')
-            .first()
-            .find('img')
-            .attr('src');
-          const novelUrl = $(elem).find('div').first().find('a').attr('href');
+        // Chireads switched to a "refresh" WordPress theme; listing items
+        // are now `#content li article` with the title/link inside
+        // `.news-list-tit a` and the cover inside `.news-list-img img`.
+        $('#content li article').each((i, elem) => {
+          const $el = $(elem);
+          const $link = $el.find('.news-list-tit a').first();
+          const novelName = $link.text().trim();
+          const novelCover = $el.find('.news-list-img img').attr('src');
+          const novelUrl = $link.attr('href');
 
           if (novelUrl) {
             novel = {
@@ -79,53 +73,25 @@ class ChireadsPlugin implements Plugin.PluginBase {
         });
       }
     } else {
-      const populaire = $(':contains("Populaire")')
-        .last()
-        .parent()
-        .next()
-        .find('li > div');
-      if (populaire.length === 12) {
-        // pc
-        let novelCover: string | undefined;
-        let novelName: string | undefined;
-        let novelUrl: string | undefined;
-        populaire.each((i, elem) => {
-          if (i % 2 === 0) novelCover = $(elem).find('img').attr('src');
-          else {
-            novelName = $(elem).text().trim();
-            novelUrl = $(elem).find('a').attr('href');
+      // Homepage "Populaire" block: `.recommended-list li` with a cover
+      // div (`.recommended-list-img img`) and a title/link div
+      // (`.recommended-list-txt a`).
+      $('.recommended-list li').each((i, elem) => {
+        const $el = $(elem);
+        const novelCover = $el.find('.recommended-list-img img').attr('src');
+        const $link = $el.find('.recommended-list-txt a');
+        const novelName = $link.text().trim();
+        const novelUrl = $link.attr('href');
 
-            if (!novelUrl) return;
-
-            novel = {
-              name: novelName,
-              cover: novelCover || defaultCover,
-              path: novelUrl.replace(this.site, ''),
-            };
-
-            novels.push(novel);
-          }
-        });
-      } // mobile
-      else {
-        const imgs = populaire.find('div.popular-list-img img');
-        const txts = populaire.find('div.popular-list-name');
-
-        txts.each((i, elem) => {
-          const novelName = $(elem).text().trim();
-          const novelCover = $(imgs[i]).attr('src');
-          const novelUrl = $(elem).find('a').attr('href');
-
-          if (novelUrl) {
-            novel = {
-              name: novelName,
-              cover: novelCover,
-              path: novelUrl.replace(this.site, ''),
-            };
-            novels.push(novel);
-          }
-        });
-      }
+        if (novelUrl) {
+          novel = {
+            name: novelName,
+            cover: novelCover || defaultCover,
+            path: novelUrl.replace(this.site, ''),
+          };
+          novels.push(novel);
+        }
+      });
     }
     return novels;
   }
@@ -135,57 +101,40 @@ class ChireadsPlugin implements Plugin.PluginBase {
 
     const $ = await this.getCheerio(this.site + novelPath);
 
-    novel.name =
-      $('.inform-product-txt').first().text().trim() ||
-      $('.inform-title').text().trim();
+    // "refresh" theme: title/cover/summary/meta all moved under
+    // `.refresh-detail-*` classes.
+    novel.name = $('h1.refresh-detail-title').text().trim() || novel.name;
     novel.cover =
-      $('.inform-product img').attr('src') ||
-      $('.inform-product-img img').attr('src') ||
-      defaultCover;
-    novel.summary =
-      $('.inform-inform-txt').text().trim() ||
-      $('.inform-intr-txt').text().trim();
+      $('figure.refresh-detail-cover img').attr('src') || defaultCover;
+    novel.summary = $('#refresh-detail-summary-content').text().trim();
 
-    const infos =
-      $('div.inform-product-txt > div.inform-intr-col').text().trim() ||
-      $('div.inform-inform-data > h6').text().trim();
-    if (infos.includes('Auteur : '))
-      novel.author = infos
-        .substring(
-          infos.indexOf('Auteur : ') + 9,
-          infos.indexOf('Statut de Parution : '),
-        )
-        .trim();
-    else if (infos.includes('Fantrad : '))
-      novel.author = infos
-        .substring(
-          infos.indexOf('Fantrad : ') + 10,
-          infos.indexOf('Statut de Parution : '),
-        )
-        .trim();
-    else novel.author = 'Inconnu';
-    switch (
-      infos.substring(infos.indexOf('Statut de Parution : ') + 21).toLowerCase()
+    novel.author =
+      $('dl.refresh-detail-meta dt:contains("Auteur")')
+        .next('dd')
+        .text()
+        .trim() || 'Inconnu';
+
+    const statusText = $(
+      'dl.refresh-detail-meta dt:contains("Statut de Parution")',
+    )
+      .next('dd')
+      .text()
+      .trim()
+      .toLowerCase();
+    if (statusText.includes('pause')) {
+      novel.status = NovelStatus.OnHiatus;
+    } else if (
+      statusText.includes('termin') ||
+      statusText.includes('complet')
     ) {
-      case 'en pause':
-        novel.status = NovelStatus.OnHiatus;
-        break;
-      case 'complet':
-        novel.status = NovelStatus.Completed;
-        break;
-      default:
-        novel.status = NovelStatus.Ongoing;
-        break;
+      novel.status = NovelStatus.Completed;
+    } else {
+      novel.status = NovelStatus.Ongoing;
     }
 
     const chapters: Plugin.ChapterItem[] = [];
 
-    let chapterList = $('.chapitre-table a');
-    if (!chapterList.length) {
-      $('div.inform-annexe-list').first().remove();
-      chapterList = $('.inform-annexe-list').find('a');
-    }
-    chapterList.each((i, elem) => {
+    $('.refresh-detail-chapter-list a').each((i, elem) => {
       const chapterName = $(elem).text().trim();
       const chapterUrl = $(elem).attr('href');
       const releaseDate = dayjs(

@@ -12,8 +12,8 @@ const headers: Record<string, string> = {
 class freedlit implements Plugin.PluginBase {
   id = 'freedlit.space';
   name = 'LitSpace';
-  site = 'https://freedlit.space';
-  version = '1.1.0';
+  site = 'https://litspace.online';
+  version = '1.1.1';
   icon = 'src/ru/freedlit/icon.png';
 
   async popularNovels(
@@ -157,16 +157,37 @@ class freedlit implements Plugin.PluginBase {
     this.site + (isNovel ? '/book/' : '/reader/') + path;
 
   getToken = (header: Headers) => {
-    const cookies = header.get('set-cookie') || '';
-    for (const cookie of cookies.split('; ')) {
-      const [key, val] = cookie.split('=');
+    // The server sends multiple Set-Cookie headers (XSRF token + session).
+    // Some fetch implementations don't keep an automatic cookie jar, so we
+    // must capture every cookie here and resend them as a single `Cookie`
+    // header, or Laravel's CSRF check on POST endpoints returns 419.
+    const rawSetCookie =
+      typeof header.getSetCookie === 'function'
+        ? header.getSetCookie()
+        : (header.get('set-cookie') || '').split(/, (?=[\w-]+=)/);
+
+    for (const cookie of rawSetCookie) {
+      const pair = cookie.split(';')[0]?.trim();
+      const eqIdx = pair?.indexOf('=') ?? -1;
+      if (!pair || eqIdx === -1) continue;
+      const key = pair.slice(0, eqIdx);
+      const val = pair.slice(eqIdx + 1);
+      this.cookieJar[key] = val;
       if (key === 'XSRF-TOKEN') {
         headers['X-XSRF-TOKEN'] = decodeURIComponent(val);
-        return;
       }
     }
+
+    if (Object.keys(this.cookieJar).length > 0) {
+      headers['Cookie'] = Object.entries(this.cookieJar)
+        .map(([key, val]) => `${key}=${val}`)
+        .join('; ');
+    }
+
     if (!headers['X-XSRF-TOKEN']) throw new Error('Failed to find the token');
   };
+
+  private cookieJar: Record<string, string> = {};
 
   filters = {
     sort: {

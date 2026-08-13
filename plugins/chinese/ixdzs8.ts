@@ -195,10 +195,19 @@ class ixdzs8Plugin implements Plugin.PluginBase {
     if (html.includes('正在進行安全驗證') || html.includes('challenge')) {
       const tokenMatch = html.match(/let token\s*=\s*"([^"]+)"/);
       if (tokenMatch) {
+        // The challenge sets a PHPSESSID cookie that must be sent back on
+        // the follow-up request, otherwise the site keeps serving fresh
+        // challenge pages forever (each with a new token).
+        const setCookie = result.headers.get('set-cookie') || '';
+        const sessionCookie = setCookie.match(/PHPSESSID=[^;,\s]+/)?.[0];
+
         const challengeUrl =
           chapterUrl + '?challenge=' + encodeURIComponent(tokenMatch[1]);
 
-        result = await fetchApi(challengeUrl);
+        result = await fetchApi(
+          challengeUrl,
+          sessionCookie ? { headers: { Cookie: sessionCookie } } : undefined,
+        );
         if (!result.ok)
           throw new Error(`Failed after challenge redirect: ${challengeUrl}`);
         html = await result.text();

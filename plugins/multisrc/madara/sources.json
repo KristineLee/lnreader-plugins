@@ -590,16 +590,6 @@
     }
   },
   {
-    "id": "dragonholic",
-    "sourceSite": "https://dragonholictranslations.com/",
-    "sourceName": "Dragonholic Translations",
-    "options": {
-      "lang": "English",
-      "useNewChapterEndpoint": true,
-      "versionIncrements": 1
-    }
-  },
-  {
     "id": "etudetranslations",
     "sourceSite": "https://etudetranslations.com/",
     "sourceName": "Etude Translations",

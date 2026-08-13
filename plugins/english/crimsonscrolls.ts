@@ -5,30 +5,31 @@ import { storage } from '@libs/storage';
 import { defaultCover } from '@libs/defaultCover';
 import { NovelStatus } from '@libs/novelStatus';
 
-enum APIAction {
-  novels = 'load_novels',
-  search = 'live_novel_search',
-}
+type SearchJSON = {
+  items: SearchItem[];
+};
 
-type APIParams = {
-  action: APIAction;
-  params: Record<string, string | number>;
+type SearchItem = {
+  id: number;
+  title: string;
+  url: string;
+  cover?: string;
+  status?: string;
 };
 
 type ChapterJSON = {
   items: ChapterItem[];
   total: number;
-  total_pages?: number;
-  page?: number;
-  per_page?: number;
-  order?: string;
+  page: number;
+  pages: number;
 };
 
 type ChapterItem = {
   id: number;
+  number: string;
   title: string;
   url: string;
-  locked: boolean;
+  tier: string;
 };
 
 class CrimsonScrollsPlugin implements Plugin.PluginBase {
@@ -36,7 +37,7 @@ class CrimsonScrollsPlugin implements Plugin.PluginBase {
   name = 'Crimson Scrolls';
   icon = 'src/en/crimsonscrolls/icon.png';
   site = 'https://crimsonscrolls.net';
-  version = '1.0.1';
+  version = '1.1.0';
 
   hideLocked = storage.get('hideLocked');
   pluginSettings = {
@@ -47,38 +48,14 @@ class CrimsonScrollsPlugin implements Plugin.PluginBase {
     },
   };
 
-  async queryAPI(query: APIParams): Promise<CheerioAPI> {
-    const formData = new FormData();
-    formData.append('action', query.action);
-    for (const [key, value] of Object.entries(query.params))
-      formData.append(key, value.toString());
-
-    const result = await fetchApi(`${this.site}/wp-admin/admin-ajax.php`, {
-      method: 'POST',
-      body: formData,
-    }).then(result => result.json());
-
-    return parseHTML(result.html);
-  }
-
-  async fetchChapters(
-    id: number,
-    page?: number | undefined,
-  ): Promise<ChapterItem[]> {
-    const url = `${this.site}/wp-json/cs/v1/novels/${id}/chapters?per_page=75&order=asc`;
-    const data: ChapterJSON = await fetchApi(`${url}&page=${page ?? 1}`).then(
-      r => r.json(),
-    );
+  async fetchChapters(id: number, page = 1): Promise<ChapterItem[]> {
+    const url = `${this.site}/wp-json/crimsonscrolls/v2/novel-chapters?novel_id=${id}&tier=all&page=${page}&per_page=100&search=&order=ASC`;
+    const data: ChapterJSON = await fetchApi(url).then(r => r.json());
 
     const items = data.items || [];
-    const locked = items.some(e => e.locked);
 
-    if (
-      data.total_pages &&
-      (data.page ?? 1) < data.total_pages &&
-      !(locked && this.hideLocked)
-    ) {
-      const nextItems = await this.fetchChapters(id, (data.page ?? 0) + 1);
+    if (data.pages && data.page < data.pages) {
+      const nextItems = await this.fetchChapters(id, data.page + 1);
       return items.concat(nextItems);
     }
 
@@ -88,43 +65,38 @@ class CrimsonScrollsPlugin implements Plugin.PluginBase {
   parseNovels(loadedCheerio: CheerioAPI) {
     const novels: Plugin.NovelItem[] = [];
 
-    loadedCheerio(':is(a.live-search-item, div.novel-list-card)').each(
-      (i, el) => {
-        const novelName = loadedCheerio(el)
-          .find(':is(div.live-search-title, h3.novel-title)')
-          .text()
-          .trim();
-        const novelCover = loadedCheerio(el)
-          .find(':is(img.live-search-cover, div.novel-cover img)')
-          .attr('src');
-        const novelUrl =
-          loadedCheerio(el).find('a').attr('href') ||
-          loadedCheerio(el).attr('href');
+    loadedCheerio('article.cs-browse-card').each((i, el) => {
+      const novelName = loadedCheerio(el).find('h2 a').text().trim();
+      const novelCover =
+        loadedCheerio(el)
+          .find('.cs-browse-card__cover-wrap img')
+          .attr('data-src') ||
+        loadedCheerio(el).find('.cs-browse-card__cover-wrap img').attr('src');
+      const novelUrl = loadedCheerio(el)
+        .find('.cs-browse-card__cover')
+        .attr('href');
 
-        if (!novelUrl) return;
+      if (!novelUrl) return;
 
-        const novel = {
-          name: novelName
-            .trim()
-            .split(' ')
-            .filter(e => e.length > 0)
-            .join(' '),
-          cover: novelCover,
-          path: novelUrl
-            ? new URL(novelUrl, this.site).pathname.substring(1)
-            : defaultCover,
-        };
-        novels.push(novel);
-      },
-    );
+      const novel = {
+        name: novelName
+          .trim()
+          .split(' ')
+          .filter(e => e.length > 0)
+          .join(' '),
+        cover: novelCover,
+        path: new URL(novelUrl, this.site).pathname.substring(1),
+      };
+      novels.push(novel);
+    });
     return novels;
   }
 
   async popularNovels(page: number): Promise<Plugin.NovelItem[]> {
-    const loadedCheerio = await this.queryAPI({
-      action: APIAction.novels,
-      params: { page: page.toString() },
-    });
+    const body = await fetchApi(`${this.site}/novels/?cs_page=${page}`).then(
+      r => r.text(),
+    );
+    const loadedCheerio = parseHTML(body);
     return this.parseNovels(loadedCheerio);
   }
 
@@ -134,25 +106,25 @@ class CrimsonScrollsPlugin implements Plugin.PluginBase {
     );
 
     const loadedCheerio = parseHTML(result);
-    const novelInfo = loadedCheerio('#single-novel-content-wrapper');
 
     const novel: Plugin.SourceNovel = {
       path: novelPath,
-      name: novelInfo.find('h1').text().trim() ?? 'Untitled',
+      name: loadedCheerio('.cs-novel-info h1').text().trim() ?? 'Untitled',
       cover:
-        novelInfo.find('img:first').data('src')?.toString() ?? defaultCover,
-      summary: novelInfo.find('#synopsis-full').text().trim(),
-      author: novelInfo.find('strong:first').next().text().trim(),
+        loadedCheerio('.cs-cover img').attr('src')?.toString() ?? defaultCover,
+      summary: loadedCheerio('#synopsis-full').text().trim(),
+      author: loadedCheerio('.cs-novel-creator-card--author strong')
+        .text()
+        .trim(),
       chapters: [],
     };
 
-    novel.genres = novelInfo
-      .find('.cs-genre-chip')
+    novel.genres = loadedCheerio('.cs-detail-genres a')
       .map((_, el) => loadedCheerio(el).text().trim())
       .toArray()
       .join(',');
 
-    const rawStatus = novelInfo.find('.cs-nsb-badge').text().trim();
+    const rawStatus = loadedCheerio('.cs-cover-status').text().trim();
     const map: Record<string, string> = {
       ongoing: NovelStatus.Ongoing,
       hiatus: NovelStatus.OnHiatus,
@@ -162,16 +134,19 @@ class CrimsonScrollsPlugin implements Plugin.PluginBase {
     };
     novel.status = map[rawStatus.toLowerCase()] ?? NovelStatus.Unknown;
 
-    const id = loadedCheerio('#chapter-list').data('novel');
+    const id = loadedCheerio('[data-novel-chapters]').attr(
+      'data-novel-chapters',
+    );
     const chapters = await this.fetchChapters(Number(id));
 
     const novelChapters: Plugin.ChapterItem[] = [];
     chapters.forEach((chapter, index) => {
-      if (!(chapter.locked && this.hideLocked)) {
+      const locked = chapter.tier !== 'free';
+      if (!(locked && this.hideLocked)) {
         novelChapters.push({
-          name: chapter.locked ? `🔒 ${chapter.title}` : chapter.title,
+          name: locked ? `🔒 ${chapter.title}` : chapter.title,
           path: chapter.url
-            ? new URL(chapter.url, this.site).pathname.split('/')[2]
+            ? new URL(chapter.url, this.site).pathname.substring(1)
             : '',
           chapterNumber: index + 1,
         });
@@ -183,33 +158,32 @@ class CrimsonScrollsPlugin implements Plugin.PluginBase {
   }
 
   async parseChapter(chapterPath: string): Promise<string> {
-    const body = await fetchApi(`${this.site}/chapter/${chapterPath}`).then(r =>
+    const body = await fetchApi(`${this.site}/${chapterPath}`).then(r =>
       r.text(),
     );
     const loadedCheerio = parseHTML(body);
     for (const i of [
-      'hr.cs-attrib-divider',
-      'div.cs-attrib',
-      'p.cs-chapter-attrib',
+      '.cs-chapter-ad',
+      '.cs-reader-end-watermark',
+      '.cs-copy-watermark',
+      'header.cs-reader-title',
     ])
-      loadedCheerio(`#chapter-display ${i}:last`).remove();
+      loadedCheerio(`article.cs-reader ${i}`).remove();
 
-    const chapterText = loadedCheerio('#chapter-display').html() || '';
+    const chapterText = loadedCheerio('article.cs-reader').html() || '';
     return chapterText;
   }
 
   async searchNovels(searchTerm: string): Promise<Plugin.NovelItem[]> {
-    const loadedCheerio = await this.queryAPI({
-      action: APIAction.search,
-      params: { query: searchTerm },
-    });
+    const url = `${this.site}/wp-json/crimsonscrolls/v2/novel-search?q=${encodeURIComponent(searchTerm)}`;
+    const data: SearchJSON = await fetchApi(url).then(r => r.json());
 
-    return this.parseNovels(loadedCheerio);
+    return (data.items || []).map(item => ({
+      name: item.title,
+      cover: item.cover,
+      path: new URL(item.url, this.site).pathname.substring(1),
+    }));
   }
-
-  // not sure purpose of this, commented out
-  // resolveUrl = (path: string, isNovel?: boolean) =>
-  //   this.site + '/novel/' + path;
 }
 
 export default new CrimsonScrollsPlugin();

@@ -229,15 +229,23 @@ class XiaowazPlugin implements Plugin.PluginBase {
   async parseChapter(chapterPath: string): Promise<string> {
     const $ = await this.getCheerio(this.site + chapterPath);
 
-    const startTag = $('.wp-post-navigation');
-    const endTag = $('.abh_box.abh_box_down.abh_box_business');
+    // The site used to bound chapter content with a `.abh_box_business`
+    // footer element, which no longer exists. The content is now bounded
+    // by two `.wp-post-navigation` blocks (prev/next links) rendered right
+    // before and right after the chapter text inside `.entry-content`.
+    const navTags = $('.entry-content .wp-post-navigation');
+    const startTag = navTags.first();
+    const endTag = navTags.length > 1 ? navTags.last() : undefined;
 
     const elementsBetweenTags: string[] = [];
     let footnotesElement: string | null = null;
 
-    if (startTag.length > 0 && endTag.length > 0) {
+    if (startTag.length > 0) {
       let currentElement = startTag.next();
-      while (currentElement.length > 0 && !currentElement.is(endTag)) {
+      while (
+        currentElement.length > 0 &&
+        !(endTag && currentElement.is(endTag))
+      ) {
         if (
           currentElement.find('p > a[href="https://ko-fi.com/wazouille"]')
             .length > 0

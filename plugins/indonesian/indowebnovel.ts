@@ -9,7 +9,7 @@ class IndoWebNovel implements Plugin.PluginBase {
   name = 'IndoWebNovel';
   icon = 'src/id/indowebnovel/icon.png';
   site = 'https://indowebnovel.id/';
-  version = '1.2.3';
+  version = '1.2.4';
 
   parseNovels(loadedCheerio: CheerioAPI) {
     const novels: Plugin.NovelItem[] = [];
@@ -88,7 +88,7 @@ class IndoWebNovel implements Plugin.PluginBase {
 
     const chapters: Plugin.ChapterItem[] = [];
 
-    loadedCheerio('.series-chapterlist li').each((i, el) => {
+    loadedCheerio('.series-chapterlists li').each((i, el) => {
       const chapterName = loadedCheerio(el).find('a').text().trim();
       const chapterUrl = loadedCheerio(el).find('a').attr('href');
 
@@ -111,7 +111,7 @@ class IndoWebNovel implements Plugin.PluginBase {
 
     const loadedCheerio = parseHTML(body);
 
-    const chapterText = loadedCheerio('.adsads').html() || '';
+    const chapterText = loadedCheerio('#content').html() || '';
 
     return chapterText;
   }
