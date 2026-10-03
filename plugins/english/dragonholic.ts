@@ -3,6 +3,18 @@ import { fetchApi, FetchInit } from '@libs/fetch';
 import { load as loadCheerio } from 'cheerio';
 import { defaultCover } from '@libs/defaultCover';
 import { NovelStatus } from '@libs/novelStatus';
+import { FilterTypes, Filters } from '@libs/filterInputs';
+
+type WPSeries = {
+  slug: string;
+  title: { rendered: string };
+  _embedded?: {
+    'wp:featuredmedia'?: {
+      source_url?: string;
+      media_details?: { sizes?: { medium?: { source_url?: string } } };
+    }[];
+  };
+};
 
 type LuminaChapter = {
   id?: string | number;
@@ -37,7 +49,7 @@ class Dragonholic implements Plugin.PluginBase {
   name = 'Dragonholic Translations';
   icon = 'src/en/dragonholic/icon.png';
   site = 'https://dragonholictranslations.com';
-  version = '3.0.1';
+  version = '3.1.0';
 
   private decodeEntities(text: string): string {
     return text
@@ -103,7 +115,16 @@ class Dragonholic implements Plugin.PluginBase {
     return /^\/?series\//.test(path);
   }
 
-  async popularNovels(pageNo: number): Promise<Plugin.NovelItem[]> {
+  async popularNovels(
+    pageNo: number,
+    {
+      showLatestNovels,
+      filters,
+    }: Plugin.PopularNovelsOptions<typeof this.filters>,
+  ): Promise<Plugin.NovelItem[]> {
+    if (!showLatestNovels) {
+      return this.browseSeries(pageNo, filters);
+    }
     const url = pageNo > 1 ? this.site + '/?updates_page=' + pageNo : this.site;
     const res = await this.fetchSite(url);
     const body = await res.text();
@@ -136,6 +157,67 @@ class Dragonholic implements Plugin.PluginBase {
     );
 
     return novels;
+  }
+
+  // The homepage has no filtering, but the site's WordPress API still does.
+  private async browseSeries(
+    pageNo: number,
+    filters?: Plugin.PopularNovelsOptions<typeof this.filters>['filters'],
+  ): Promise<Plugin.NovelItem[]> {
+    // Saved filter values may be missing or from another version; ignore
+    // anything that isn't one of the current options.
+    const raw = (key: string) =>
+      (filters as Record<string, { value?: unknown }>)?.[key]?.value;
+    const pick = (key: 'sort' | 'order') => {
+      const value = raw(key);
+      return this.filters[key].options.some(option => option.value === value)
+        ? (value as string)
+        : this.filters[key].value;
+    };
+    const checked = (key: 'status' | 'genre') => {
+      const value = raw(key);
+      return (Array.isArray(value) ? value : []).filter(id =>
+        this.filters[key].options.some(option => option.value === id),
+      );
+    };
+    const statuses = checked('status');
+    const genres = checked('genre');
+
+    const params = new URLSearchParams({
+      page: pageNo.toString(),
+      per_page: '20',
+      _embed: 'wp:featuredmedia',
+      orderby: pick('sort'),
+      order: pick('order'),
+    });
+    if (statuses.length) params.append('story-status', statuses.join(','));
+    if (genres.length) params.append('genre', genres.join(','));
+
+    const res = await fetchApi(
+      this.site + '/wp-json/wp/v2/series?' + params.toString(),
+    );
+    // WordPress answers 400 for a page past the end; treat it as no more results.
+    if (res.status === 400) return [];
+    if (!res.ok) {
+      throw Object.assign(new Error('Request failed: ' + res.status), {
+        status: res.status,
+      });
+    }
+    const items = (await res.json()) as WPSeries[];
+
+    return items.map(item => {
+      const media = item._embedded?.['wp:featuredmedia']?.[0];
+      return {
+        name: this.decodeEntities(
+          item.title.rendered.replace(/<[^>]+>/g, ''),
+        ).trim(),
+        path: item.slug,
+        cover:
+          media?.media_details?.sizes?.medium?.source_url ||
+          media?.source_url ||
+          defaultCover,
+      };
+    });
   }
 
   async parseNovel(path: string): Promise<Plugin.SourceNovel> {
@@ -287,6 +369,83 @@ class Dragonholic implements Plugin.PluginBase {
 
   resolveUrl = (path: string) =>
     this.site + '/series/' + this.normalizePath(path) + '/';
+
+  filters = {
+    sort: {
+      label: 'Sort by',
+      value: 'modified',
+      options: [
+        { label: 'Recently Updated', value: 'modified' },
+        { label: 'Latest Upload', value: 'date' },
+        { label: 'Title', value: 'title' },
+      ],
+      type: FilterTypes.Picker,
+    },
+    order: {
+      label: 'Order',
+      value: 'desc',
+      options: [
+        { label: 'Descending', value: 'desc' },
+        { label: 'Ascending', value: 'asc' },
+      ],
+      type: FilterTypes.Picker,
+    },
+    // Checkboxes rather than a dropdown: a 6-item dropdown in the third row
+    // can open under the phone's navigation bar in the app's filter sheet.
+    status: {
+      label: 'Status',
+      value: [] as string[],
+      options: [
+        // The site has two separate "ongoing" terms.
+        { label: 'Ongoing', value: '876,5486' },
+        { label: 'Completed', value: '5487' },
+        { label: 'Hiatus', value: '5490' },
+        { label: 'Dropped', value: '5489' },
+        { label: 'Canceled', value: '5488' },
+      ],
+      type: FilterTypes.CheckboxGroup,
+    },
+    genre: {
+      label: 'Genre',
+      value: [] as string[],
+      options: [
+        { label: 'Action', value: '2' },
+        { label: 'Adult', value: '3' },
+        { label: 'Adventure', value: '4' },
+        { label: 'BL', value: '389' },
+        { label: 'Comedy', value: '6' },
+        { label: 'Drama', value: '10' },
+        { label: 'Ecchi', value: '11' },
+        { label: 'Fantasy', value: '12' },
+        { label: 'Harem', value: '390' },
+        { label: 'Historical', value: '391' },
+        { label: 'Horror', value: '392' },
+        { label: 'Josei', value: '393' },
+        { label: 'Martial Arts', value: '22' },
+        { label: 'Mature', value: '23' },
+        { label: 'Mecha', value: '24' },
+        { label: 'Mystery', value: '25' },
+        { label: 'Psychological', value: '27' },
+        { label: 'Reincarnation', value: '394' },
+        { label: 'Romance', value: '28' },
+        { label: 'School Life', value: '29' },
+        { label: 'Sci-fi', value: '30' },
+        { label: 'Seinen', value: '31' },
+        { label: 'Shoujo', value: '32' },
+        { label: 'Shoujo Ai', value: '33' },
+        { label: 'Slice of Life', value: '36' },
+        { label: 'Smut', value: '37' },
+        { label: 'Sports', value: '40' },
+        { label: 'Supernatural', value: '41' },
+        { label: 'Tragedy', value: '42' },
+        { label: 'Webtoon', value: '43' },
+        { label: 'Xianxia', value: '395' },
+        { label: 'Yaoi', value: '44' },
+        { label: 'Yuri', value: '45' },
+      ],
+      type: FilterTypes.CheckboxGroup,
+    },
+  } satisfies Filters;
 }
 
 export default new Dragonholic();
