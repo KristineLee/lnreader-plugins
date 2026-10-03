@@ -36,7 +36,7 @@ class ScribbleHubPlugin implements Plugin.PluginBase {
   name = 'Scribble Hub';
   icon = 'src/en/scribblehub/icon.png';
   site = 'https://www.scribblehub.com/';
-  version = '1.1.1';
+  version = '1.1.2';
 
   apiUrl = `${this.site}wp-json/fictionapp/v1/`;
 
@@ -195,7 +195,20 @@ class ScribbleHubPlugin implements Plugin.PluginBase {
 
   resolveUrl = (path: string) => this.site + path;
 
+  // Order matters for the app's filter sheet: the short Status dropdown goes
+  // first so the 6-item Sort dropdown doesn't open under the phone's
+  // navigation bar; the long Genre list always opens upward from the last row.
   filters = {
+    status: {
+      label: 'Story Status',
+      value: '',
+      options: [
+        { label: 'All', value: '' },
+        { label: 'Ongoing', value: 'ongoing' },
+        { label: 'Completed', value: 'completed' },
+      ],
+      type: FilterTypes.Picker,
+    },
     sort: {
       label: 'Sort Results By',
       value: 'popular',
@@ -206,16 +219,6 @@ class ScribbleHubPlugin implements Plugin.PluginBase {
         { label: 'Readers', value: 'readers' },
         { label: 'Chapters', value: 'chapters' },
         { label: 'Total Words', value: 'words' },
-      ],
-      type: FilterTypes.Picker,
-    },
-    status: {
-      label: 'Story Status',
-      value: '',
-      options: [
-        { label: 'All', value: '' },
-        { label: 'Ongoing', value: 'ongoing' },
-        { label: 'Completed', value: 'completed' },
       ],
       type: FilterTypes.Picker,
     },
