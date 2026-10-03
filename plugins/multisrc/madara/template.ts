@@ -18,6 +18,7 @@ type MadaraOptions = {
   versionIncrements?: number;
   customJs?: string;
   hasLocked?: boolean;
+  browserHeaders?: boolean;
 };
 
 export type MadaraMetadata = {
@@ -59,6 +60,18 @@ export class MadaraPlugin implements Plugin.PluginBase {
         },
       };
     }
+  }
+
+  // Opt-in for sites whose bot check rejects fetchApi's wildcard Accept
+  // headers (e.g. lovelyblossoms.com, see #2599). The app's User-Agent is
+  // left untouched so WebView clearance cookies still match.
+  get requestHeaders(): Record<string, string> | undefined {
+    if (!this.options?.browserHeaders) return undefined;
+    return {
+      'Accept':
+        'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      'Accept-Language': 'en-US,en;q=0.9',
+    };
   }
 
   translateDragontea(text: Cheerio<AnyNode>): Cheerio<AnyNode> {
@@ -107,7 +120,7 @@ export class MadaraPlugin implements Plugin.PluginBase {
   }
 
   async getCheerio(url: string, search: boolean): Promise<CheerioAPI> {
-    const r = await fetchApi(url);
+    const r = await fetchApi(url, { headers: this.requestHeaders });
     if (!r.ok && search != true)
       throw new Error(
         'Could not reach site (' + r.status + ') try to open in webview.',
@@ -235,6 +248,11 @@ export class MadaraPlugin implements Plugin.PluginBase {
         case 'المؤلف (ين)':
           novel.author = detail.text().trim();
           break;
+        case 'Translator(s)':
+        case 'Translator':
+        case 'Translators':
+          if (!novel.author) novel.author = detail.text().trim();
+          break;
         case 'Status':
         case 'Novel':
         case 'Estado':
@@ -286,6 +304,13 @@ export class MadaraPlugin implements Plugin.PluginBase {
         .get()
         .join('\n\n')
         .trim() ||
+      loadedCheerio('.post-content_item h5:contains("Summary")')
+        .next()
+        .find('p')
+        .map((i, el) => loadedCheerio(el).text())
+        .get()
+        .join('\n\n')
+        .trim() ||
       loadedCheerio('.manga-summary p')
         .map((i, el) => loadedCheerio(el).text())
         .get()
@@ -302,6 +327,7 @@ export class MadaraPlugin implements Plugin.PluginBase {
     if (this.options?.useNewChapterEndpoint) {
       html = await fetchApi(this.site + novelPath + 'ajax/chapters/', {
         method: 'POST',
+        headers: this.requestHeaders,
         referrer: this.site + novelPath,
       }).then((res: Response) => res.text());
 
@@ -322,7 +348,11 @@ export class MadaraPlugin implements Plugin.PluginBase {
           for (let page = 2; page <= maxPage; page++) {
             const pageHtml = await fetchApi(
               this.site + novelPath + 'ajax/chapters/' + queryTemplate + page,
-              { method: 'POST', referrer: this.site + novelPath },
+              {
+                method: 'POST',
+                headers: this.requestHeaders,
+                referrer: this.site + novelPath,
+              },
             ).then((res: Response) => res.text());
             if (pageHtml && pageHtml !== '0') html += pageHtml;
           }
@@ -340,6 +370,7 @@ export class MadaraPlugin implements Plugin.PluginBase {
 
       html = await fetchApi(this.site + 'wp-admin/admin-ajax.php', {
         method: 'POST',
+        headers: this.requestHeaders,
         body: formData,
       }).then((res: Response) => res.text());
     }

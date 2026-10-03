@@ -316,7 +316,8 @@
     "sourceName": "Azora",
     "options": {
       "useNewChapterEndpoint": true,
-      "lang": "Arabic"
+      "lang": "Arabic",
+      "down": true
     }
   },
   {
@@ -552,15 +553,6 @@
     }
   },
   {
-    "id": "WebNovelTraslation",
-    "sourceSite": "https://webnoveltranslations.com/",
-    "sourceName": "Web Novel Translation",
-    "options": {
-      "lang": "English",
-      "useNewChapterEndpoint": true
-    }
-  },
-  {
     "id": "AnimesHoy12",
     "sourceSite": "https://animeshoy12.com/",
     "sourceName": "AnimesHoy12",
@@ -647,6 +639,34 @@
     "id": "novelnice",
     "sourceSite": "https://novelnice.com/",
     "sourceName": "Novel Nice",
+    "options": {
+      "lang": "English",
+      "useNewChapterEndpoint": true
+    }
+  },
+  {
+    "id": "novelshort",
+    "sourceSite": "https://novel-short.com/",
+    "sourceName": "Novel Short",
+    "options": {
+      "lang": "English",
+      "useNewChapterEndpoint": true
+    }
+  },
+  {
+    "id": "lovelyblossoms",
+    "sourceSite": "https://lovelyblossoms.com/",
+    "sourceName": "Lovelyblossoms",
+    "options": {
+      "useNewChapterEndpoint": true,
+      "browserHeaders": true,
+      "versionIncrements": 1
+    }
+  },
+  {
+    "id": "tangerinearchive",
+    "sourceSite": "https://tangerinearchive.com/",
+    "sourceName": "Tangerine Archive",
     "options": {
       "lang": "English",
       "useNewChapterEndpoint": true
