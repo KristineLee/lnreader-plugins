@@ -34,10 +34,10 @@ type LuminaSearchResult = {
 
 class Dragonholic implements Plugin.PluginBase {
   id = 'dragonholic';
-  name = 'Dragonholic';
+  name = 'Dragonholic Translations';
   icon = 'src/en/dragonholic/icon.png';
   site = 'https://dragonholictranslations.com';
-  version = '3.0.0';
+  version = '3.0.1';
 
   private decodeEntities(text: string): string {
     return text
@@ -89,11 +89,18 @@ class Dragonholic implements Plugin.PluginBase {
     return res;
   }
 
+  // Paths saved by the fork's 1.0.0 plugin look like `series/<novel>` and
+  // `series/<novel>/<chapter>/?id=<id>`; strip both down to `<novel>[/<chapter>]`.
   private normalizePath(path: string): string {
     return path
+      .replace(/[?#].*$/, '')
       .replace(/\/{2,}/g, '/')
       .replace(/^\/+|\/+$/g, '')
-      .replace(/^novel\//, '');
+      .replace(/^(novel|series)\//, '');
+  }
+
+  private isLegacyPath(path: string): boolean {
+    return /^\/?series\//.test(path);
   }
 
   async popularNovels(pageNo: number): Promise<Plugin.NovelItem[]> {
@@ -133,12 +140,13 @@ class Dragonholic implements Plugin.PluginBase {
 
   async parseNovel(path: string): Promise<Plugin.SourceNovel> {
     const novelPath = this.normalizePath(path);
+    const legacy = this.isLegacyPath(path);
     const res = await this.fetchSite(this.resolveUrl(novelPath));
     const body = await res.text();
     const loadedCheerio = loadCheerio(body);
 
     const novel: Plugin.SourceNovel = {
-      path: novelPath,
+      path: legacy ? path : novelPath,
       name: '',
     };
 
@@ -208,9 +216,15 @@ class Dragonholic implements Plugin.PluginBase {
             .filter(part => part && part.trim())
             .join(' - ') || item.slug,
         );
+        // Library novels from 1.0.0 keep their chapter path format so the app
+        // matches existing chapters (read progress) instead of duplicating them.
+        const chapterPath =
+          legacy && item.id
+            ? 'series/' + novelPath + '/' + item.slug + '/?id=' + item.id
+            : novelPath + '/' + item.slug;
         chapters.push({
           name: item.is_premium ? '🔒 ' + title : title,
-          path: novelPath + '/' + item.slug,
+          path: chapterPath,
           releaseTime: item.created_at || undefined,
           chapterNumber: order > 0 ? order : chapters.length + 1,
         });
