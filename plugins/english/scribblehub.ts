@@ -1,36 +1,77 @@
-import { CheerioAPI, load as parseHTML } from 'cheerio';
 import { fetchApi } from '@libs/fetch';
 import { FilterTypes, Filters } from '@libs/filterInputs';
+import { NovelStatus } from '@libs/novelStatus';
+import { defaultCover } from '@libs/defaultCover';
 import { Plugin } from '@/types/plugin';
-import dayjs from 'dayjs';
 
+type ApiPage<T> = {
+  data?: T[];
+  meta?: { page?: number; totalPages?: number };
+};
+
+type ApiStory = {
+  id: number;
+  title: string;
+  slug: string;
+  coverUrl?: string;
+  description?: string;
+  status?: string;
+  author?: { displayName?: string };
+  genres?: { name: string }[];
+  tags?: { name: string }[];
+};
+
+type ApiChapter = {
+  id: number;
+  title?: string;
+  number?: number;
+  content?: string;
+  publishedAt?: string;
+};
+
+// The HTML site is behind a Cloudflare block that rejects the app's requests,
+// so everything goes through the public JSON API the official ScribbleHub app uses.
 class ScribbleHubPlugin implements Plugin.PluginBase {
   id = 'scribblehub';
   name = 'Scribble Hub';
   icon = 'src/en/scribblehub/icon.png';
   site = 'https://www.scribblehub.com/';
-  version = '1.0.2';
+  version = '1.1.0';
 
-  parseNovels(loadedCheerio: CheerioAPI) {
-    const novels: Plugin.NovelItem[] = [];
+  apiUrl = `${this.site}wp-json/fictionapp/v1/`;
 
-    loadedCheerio('.search_main_box').each((i, el) => {
-      const novelName = loadedCheerio(el).find('.search_title > a').text();
-      const novelCover = loadedCheerio(el)
-        .find('.search_img > img')
-        .attr('src');
-      const novelUrl = loadedCheerio(el).find('.search_title > a').attr('href');
-
-      if (!novelUrl) return;
-
-      const novel = {
-        name: novelName,
-        cover: novelCover,
-        path: novelUrl.replace(this.site, ''),
-      };
-      novels.push(novel);
+  private async fetchJson<T>(path: string): Promise<T> {
+    const res = await fetchApi(this.apiUrl + path, {
+      headers: { Accept: 'application/json' },
     });
-    return novels;
+    if (!res.ok) {
+      throw new Error(`Scribble Hub request failed: ${res.status}`);
+    }
+    return res.json();
+  }
+
+  // Paths keep the website's URL format (as saved by 1.0.x) so library
+  // entries and read progress still match:
+  //   novel:   series/<id>/<slug>/
+  //   chapter: read/<id>-<slug>/chapter/<chapterId>/
+  private novelPath(story: ApiStory): string {
+    const slug = story.slug.replace(new RegExp(`^${story.id}-`), '');
+    return `series/${story.id}/${slug}/`;
+  }
+
+  private storyId(path: string): string {
+    const id =
+      path.match(/series\/(\d+)/)?.[1] || path.match(/read\/(\d+)-/)?.[1];
+    if (!id) throw new Error(`Unrecognized Scribble Hub path: ${path}`);
+    return id;
+  }
+
+  private parseNovels(stories: ApiStory[] = []): Plugin.NovelItem[] {
+    return stories.map(story => ({
+      name: story.title,
+      cover: story.coverUrl || defaultCover,
+      path: this.novelPath(story),
+    }));
   }
 
   async popularNovels(
@@ -40,207 +81,137 @@ class ScribbleHubPlugin implements Plugin.PluginBase {
       filters,
     }: Plugin.PopularNovelsOptions<typeof this.filters>,
   ): Promise<Plugin.NovelItem[]> {
-    let url = `${this.site}`;
-    if (showLatestNovels) {
-      url += `latest-series/?pg=${page}`;
-    } else if (filters) {
-      const params = new URLSearchParams();
-      if (filters.genres.value.include?.length) {
-        params.append('gi', filters.genres.value.include.join(','));
-      }
-      if (
-        filters.genres.value.include?.length ||
-        filters.genres.value.exclude?.length
-      ) {
-        params.append('mgi', filters.genre_operator.value);
-      }
-      if (filters.genres.value.exclude?.length) {
-        params.append('ge', filters.genres.value.exclude.join(','));
-      }
-      if (filters.content_warning.value.include?.length) {
-        params.append('cti', filters.content_warning.value.include.join(','));
-      }
-      if (
-        filters.content_warning.value.include?.length ||
-        filters.content_warning.value.exclude?.length
-      ) {
-        params.append('mct', filters.content_warning_operator.value);
-      }
-      if (filters.content_warning.value.exclude?.length) {
-        params.append('cte', filters.content_warning.value.exclude.join(','));
-      }
-      params.append('cp', filters.storyStatus.value);
-      params.append('sort', filters.sort.value);
-      params.append('order', filters.order.value);
-      params.append('pg', page.toString());
-      url += `series-finder/?sf=1&${params.toString()}`;
-    } else {
-      url += `series-finder/?sf=1&sort=ratings&order=desc&pg=${page}`;
+    const params = new URLSearchParams({ page: page.toString() });
+    if (!showLatestNovels) {
+      if (filters.sort.value) params.append('sort', filters.sort.value);
+      if (filters.status.value) params.append('status', filters.status.value);
+      if (filters.genre.value) params.append('genre', filters.genre.value);
     }
 
-    const body = await fetchApi(url).then(result => result.text());
-
-    const loadedCheerio = parseHTML(body);
-    return this.parseNovels(loadedCheerio);
+    const result = await this.fetchJson<ApiPage<ApiStory>>(
+      `stories?${params.toString()}`,
+    );
+    return this.parseNovels(result.data);
   }
 
   async parseNovel(novelPath: string): Promise<Plugin.SourceNovel> {
-    const result = await fetchApi(this.site + novelPath);
-    const body = await result.text();
+    const id = this.storyId(novelPath);
+    const detail = await this.fetchJson<{ data?: ApiStory } & ApiStory>(
+      `stories/${id}`,
+    );
+    const story = detail.data || detail;
 
-    let loadedCheerio = parseHTML(body);
+    const genres = [...(story.genres || []), ...(story.tags || [])]
+      .map(term => term.name)
+      .join(',');
 
     const novel: Plugin.SourceNovel = {
       path: novelPath,
-      name: loadedCheerio('.fic_title').text() || 'Untitled',
-      cover: loadedCheerio('.fic_image > img').attr('src'),
-      summary: loadedCheerio('.wi_fic_desc').text(),
-      author: loadedCheerio('.auth_name_fic').text(),
-      chapters: [],
+      name: story.title || 'Untitled',
+      cover: story.coverUrl || defaultCover,
+      summary: story.description,
+      author: story.author?.displayName,
+      genres,
+      status:
+        story.status === 'completed'
+          ? NovelStatus.Completed
+          : story.status === 'ongoing'
+            ? NovelStatus.Ongoing
+            : story.status === 'hiatus'
+              ? NovelStatus.OnHiatus
+              : NovelStatus.Unknown,
     };
 
-    novel.genres = loadedCheerio('.fic_genre')
-      .map((i, el) => loadedCheerio(el).text())
-      .toArray()
-      .join(',');
+    // The API pages chapters 50 at a time regardless of per_page.
+    const first = await this.fetchJson<ApiPage<ApiChapter>>(
+      `stories/${id}/chapters?page=1`,
+    );
+    const totalPages = first.meta?.totalPages || 1;
+    const rest: ApiPage<ApiChapter>[] = [];
+    // Small batches keep long novels fast without hammering the API.
+    for (let page = 2; page <= totalPages; page += 5) {
+      const batch = Array.from(
+        { length: Math.min(5, totalPages - page + 1) },
+        (_, i) =>
+          this.fetchJson<ApiPage<ApiChapter>>(
+            `stories/${id}/chapters?page=${page + i}`,
+          ),
+      );
+      rest.push(...(await Promise.all(batch)));
+    }
 
-    novel.status = loadedCheerio('.rnd_stats').next().text().includes('Ongoing')
-      ? 'Ongoing'
-      : 'Completed';
+    const readSlug = story.slug.startsWith(`${story.id}-`)
+      ? story.slug
+      : `${story.id}-${story.slug}`;
 
-    const formData = new FormData();
-    formData.append('action', 'wi_getreleases_pagination');
-    formData.append('pagenum', '-1');
-    formData.append('mypostid', novelPath.split('/')[1]);
-
-    const data = await fetchApi(`${this.site}wp-admin/admin-ajax.php`, {
-      method: 'POST',
-      body: formData,
-    });
-    const text = await data.text();
-
-    loadedCheerio = parseHTML(text);
-
-    const chapter: Plugin.ChapterItem[] = [];
-
-    const parseISODate = (date: string) => {
-      if (date.includes('ago')) {
-        const dayJSDate = dayjs(new Date()); // today
-        const timeAgo = date.match(/\d+/)?.[0] || '';
-        const timeAgoInt = parseInt(timeAgo, 10);
-
-        if (!timeAgo) return null; // there is no number!
-
-        if (date.includes('hours ago') || date.includes('hour ago')) {
-          dayJSDate.subtract(timeAgoInt, 'hours'); // go back N hours
-        }
-
-        if (date.includes('days ago') || date.includes('day ago')) {
-          dayJSDate.subtract(timeAgoInt, 'days'); // go back N days
-        }
-
-        if (date.includes('months ago') || date.includes('month ago')) {
-          dayJSDate.subtract(timeAgoInt, 'months'); // go back N months
-        }
-
-        return dayJSDate.toISOString();
-      }
-      return null;
-    };
-
-    loadedCheerio('.toc_w').each((i, el) => {
-      const chapterName = loadedCheerio(el).find('.toc_a').text();
-      const releaseDate = loadedCheerio(el).find('.fic_date_pub').text();
-      const chapterUrl = loadedCheerio(el).find('a').attr('href');
-
-      if (!chapterUrl) return;
-      chapter.push({
-        name: chapterName,
-        releaseTime: parseISODate(releaseDate),
-        path: chapterUrl.replace(this.site, ''),
-      });
-    });
-
-    novel.chapters = chapter.reverse();
+    novel.chapters = [first, ...rest]
+      .flatMap(result => result.data || [])
+      .map(chapter => ({
+        name: chapter.title || `Chapter ${chapter.number}`,
+        path: `read/${readSlug}/chapter/${chapter.id}/`,
+        releaseTime: chapter.publishedAt || null,
+        chapterNumber: chapter.number,
+      }));
 
     return novel;
   }
 
   async parseChapter(chapterPath: string): Promise<string> {
-    const result = await fetchApi(this.site + chapterPath);
-    const body = await result.text();
-
-    const loadedCheerio = parseHTML(body);
-
-    const chapterText = loadedCheerio('div.chp_raw').html() || '';
-    return chapterText;
+    const chapterId = chapterPath.match(/chapter\/(\d+)/)?.[1];
+    if (!chapterId) {
+      throw new Error(`Unrecognized Scribble Hub chapter path: ${chapterPath}`);
+    }
+    const result = await this.fetchJson<{ data?: ApiChapter } & ApiChapter>(
+      `chapters/${chapterId}`,
+    );
+    return (result.data || result).content || '';
   }
 
-  async searchNovels(searchTerm: string): Promise<Plugin.NovelItem[]> {
-    const url = `${this.site}?s=${encodeURIComponent(searchTerm)}&post_type=fictionposts`;
-    const result = await fetchApi(url);
-    const body = await result.text();
-
-    const loadedCheerio = parseHTML(body);
-    return this.parseNovels(loadedCheerio);
+  async searchNovels(
+    searchTerm: string,
+    page: number,
+  ): Promise<Plugin.NovelItem[]> {
+    const params = new URLSearchParams({
+      search: searchTerm,
+      page: page.toString(),
+    });
+    const result = await this.fetchJson<ApiPage<ApiStory>>(
+      `stories?${params.toString()}`,
+    );
+    return this.parseNovels(result.data);
   }
+
+  resolveUrl = (path: string) => this.site + path;
 
   filters = {
     sort: {
       label: 'Sort Results By',
-      value: 'ratings',
+      value: 'popular',
       options: [
-        { label: 'Chapters', value: 'chapters' },
-        { label: 'Chapters per Week', value: 'frequency' },
-        { label: 'Date Added', value: 'dateadded' },
-        { label: 'Favorites', value: 'favorites' },
-        { label: 'Last Updated', value: 'lastchdate' },
-        { label: 'Number of Ratings', value: 'numofrate' },
-        { label: 'Pages', value: 'pages' },
-        { label: 'Pageviews', value: 'pageviews' },
-        { label: 'Ratings', value: 'ratings' },
+        { label: 'Popular', value: 'popular' },
+        { label: 'Last Updated', value: '' },
+        { label: 'Newest', value: 'new' },
         { label: 'Readers', value: 'readers' },
-        { label: 'Reviews', value: 'reviews' },
-        { label: 'Total Words', value: 'totalwords' },
+        { label: 'Chapters', value: 'chapters' },
+        { label: 'Total Words', value: 'words' },
       ],
       type: FilterTypes.Picker,
     },
-    order: {
-      label: 'Order By',
-      value: 'desc',
-      options: [
-        { label: 'Descending', value: 'desc' },
-        { label: 'Ascending', value: 'asc' },
-      ],
-      type: FilterTypes.Picker,
-    },
-    storyStatus: {
+    status: {
       label: 'Story Status',
-      value: 'all',
+      value: '',
       options: [
-        { label: 'All', value: 'all' },
-        { label: 'Completed', value: 'completed' },
+        { label: 'All', value: '' },
         { label: 'Ongoing', value: 'ongoing' },
-        { label: 'Hiatus', value: 'hiatus' },
+        { label: 'Completed', value: 'completed' },
       ],
       type: FilterTypes.Picker,
     },
-    genre_operator: {
-      value: 'and',
-      label: 'Genres (And/Or)',
+    genre: {
+      label: 'Genre',
+      value: '',
       options: [
-        { label: 'And', value: 'and' },
-        { label: 'Or', value: 'or' },
-      ],
-      type: FilterTypes.Picker,
-    },
-    genres: {
-      label: 'Genres',
-      value: {
-        include: [],
-        exclude: [],
-      },
-      options: [
+        { label: 'All', value: '' },
         { label: 'Action', value: '9' },
         { label: 'Adult', value: '902' },
         { label: 'Adventure', value: '8' },
@@ -273,29 +244,7 @@ class ScribbleHubPlugin implements Plugin.PluginBase {
         { label: 'Supernatural', value: '5' },
         { label: 'Tragedy', value: '901' },
       ],
-      type: FilterTypes.ExcludableCheckboxGroup,
-    },
-    content_warning_operator: {
-      value: 'and',
-      label: 'Mature Content (And/Or)',
-      options: [
-        { label: 'And', value: 'and' },
-        { label: 'Or', value: 'or' },
-      ],
       type: FilterTypes.Picker,
-    },
-    content_warning: {
-      value: {
-        include: [],
-        exclude: [],
-      },
-      label: 'Mature Content',
-      options: [
-        { label: 'Gore', value: '48' },
-        { label: 'Sexual Content', value: '50' },
-        { label: 'Strong Language', value: '49' },
-      ],
-      type: FilterTypes.ExcludableCheckboxGroup,
     },
   } satisfies Filters;
 }
