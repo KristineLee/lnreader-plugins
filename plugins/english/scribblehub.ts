@@ -36,7 +36,7 @@ class ScribbleHubPlugin implements Plugin.PluginBase {
   name = 'Scribble Hub';
   icon = 'src/en/scribblehub/icon.png';
   site = 'https://www.scribblehub.com/';
-  version = '1.1.0';
+  version = '1.1.1';
 
   apiUrl = `${this.site}wp-json/fictionapp/v1/`;
 
@@ -83,9 +83,21 @@ class ScribbleHubPlugin implements Plugin.PluginBase {
   ): Promise<Plugin.NovelItem[]> {
     const params = new URLSearchParams({ page: page.toString() });
     if (!showLatestNovels) {
-      if (filters.sort.value) params.append('sort', filters.sort.value);
-      if (filters.status.value) params.append('status', filters.status.value);
-      if (filters.genre.value) params.append('genre', filters.genre.value);
+      // The app can pass missing filters or values saved by 1.0.x (different
+      // keys and option values), so fall back to defaults for anything unknown.
+      const pick = (key: 'sort' | 'status' | 'genre') => {
+        const value = (filters as Record<string, { value?: unknown }>)?.[key]
+          ?.value;
+        return this.filters[key].options.some(option => option.value === value)
+          ? (value as string)
+          : this.filters[key].value;
+      };
+      const sort = pick('sort');
+      const status = pick('status');
+      const genre = pick('genre');
+      if (sort) params.append('sort', sort);
+      if (status) params.append('status', status);
+      if (genre) params.append('genre', genre);
     }
 
     const result = await this.fetchJson<ApiPage<ApiStory>>(
