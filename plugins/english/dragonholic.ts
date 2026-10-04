@@ -49,7 +49,7 @@ class Dragonholic implements Plugin.PluginBase {
   name = 'Dragonholic Translations';
   icon = 'src/en/dragonholic/icon.png';
   site = 'https://dragonholictranslations.com';
-  version = '3.1.0';
+  version = '3.1.1';
 
   private decodeEntities(text: string): string {
     return text
@@ -443,6 +443,15 @@ class Dragonholic implements Plugin.PluginBase {
         { label: 'Yaoi', value: '44' },
         { label: 'Yuri', value: '45' },
       ],
+      type: FilterTypes.CheckboxGroup,
+    },
+    // Blank, inert last row. The app's filter sheet has no bottom padding, so
+    // its last row sits under the phone's navigation bar; this keeps the last
+    // genre tappable. Not sent to the site.
+    navBarSpacer: {
+      label: '',
+      value: [] as string[],
+      options: [],
       type: FilterTypes.CheckboxGroup,
     },
   } satisfies Filters;
