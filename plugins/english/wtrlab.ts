@@ -1,15 +1,60 @@
 import { Plugin } from '@/types/plugin';
-import { fetchApi } from '@libs/fetch';
+import { FetchInit, fetchApi } from '@libs/fetch';
 import { FilterTypes, Filters } from '@libs/filterInputs';
 import { CheerioAPI, load as parseHTML } from 'cheerio';
 import { gcm } from '@libs/aes';
 import { storage } from '@libs/storage';
 
+function decodeReveal(b64: string): string {
+  try {
+    const clean = b64.replace(/-/g, '+').replace(/_/g, '/').replace(/=+$/, '');
+    if (!/^[A-Za-z0-9+/]*$/.test(clean) || clean.length % 4 === 1) return '';
+    const padded = clean + '='.repeat((4 - (clean.length % 4)) % 4);
+    if (typeof atob === 'function') {
+      const bytes = Uint8Array.from(atob(padded), c => c.charCodeAt(0));
+      return new TextDecoder().decode(bytes);
+    }
+    return '';
+  } catch {
+    return '';
+  }
+}
+
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function resolveTokens(
+  str: string | undefined | null,
+  escapeHtmlFlag = false,
+): string {
+  if (!str) return '';
+  return str.replace(
+    // eslint-disable-next-line no-control-regex
+    /%\{(?:"([^"]*)":\s*"?([A-Za-z0-9+/=_-]+)"?|([^|{}%\u0000-\u001F\u007F\u2028\u2029]+?)\s*\|\s*([A-Za-z0-9+/=_-]+))\}/g,
+    (match, safe1, b64_1, safe2, b64_2) => {
+      const safe = (safe1 ?? safe2 ?? '').trim();
+      const b64 = (b64_1 ?? b64_2 ?? '').trim();
+      const decoded = decodeReveal(b64);
+      const result = decoded || safe;
+      if (result) {
+        return escapeHtmlFlag ? escapeHtml(result) : result;
+      }
+      return match;
+    },
+  );
+}
+
 class WTRLAB implements Plugin.PluginBase {
   id = 'WTRLAB';
   name = 'WTR-LAB';
   site = 'https://wtr-lab.com/';
-  version = '1.2.2';
+  version = '1.2.6';
   icon = 'src/en/wtrlab/icon.png';
   sourceLang = 'en/';
   baggage = '';
@@ -62,6 +107,91 @@ class WTRLAB implements Plugin.PluginBase {
     return (storage.get<string>('sessionCookie') || '').trim();
   }
 
+  /**
+   * Throw a WebView hint when Cloudflare answered with its managed challenge.
+   *
+   * The whole site sits behind a challenge that answers with a
+   * "Just a moment..." page, marked `cf-mitigated: challenge`, until it is
+   * solved in WebView. Parsing that page as wtr-lab markup used to surface as
+   * "Could not find __NEXT_DATA__" or a JSON syntax error, which hid the
+   * actual fix from the user. The header is the only rule used, so a plain
+   * 403/503 from the origin is not mistaken for a challenge.
+   */
+  assertNotChallenged(res: Response): void {
+    if (res.headers.get('cf-mitigated') === 'challenge') {
+      throw Object.assign(
+        new Error(
+          `Cloudflare protection detected (HTTP ${res.status}). Please open the plugin in WebView to solve the challenge, then try again.`,
+        ),
+        { status: res.status },
+      );
+    }
+  }
+
+  /**
+   * Fetch a wtr-lab page or JSON route whose failure leaves nothing to parse:
+   * a challenge gets the WebView hint, any other failed response a plain
+   * error naming the status and URL.
+   */
+  async fetchSite(url: string, init?: FetchInit): Promise<Response> {
+    const res = await fetchApi(url, init);
+    this.assertNotChallenged(res);
+    if (!res.ok) {
+      throw Object.assign(
+        new Error(`Request failed (HTTP ${res.status}): ${url}`),
+        { status: res.status },
+      );
+    }
+    return res;
+  }
+
+  /**
+   * Resolve the chapter payload.
+   *
+   * The reader API used to carry the body inline at data.data. It now returns
+   * an envelope with a `content_url` pointing at the real payload, whose inner
+   * shape (body / glossary_data / model) is unchanged. Handle both so the
+   * plugin works whichever the server returns.
+   */
+  async resolveChapterContent(
+    parsed: ReaderResponse,
+    cookie: string,
+  ): Promise<ChapterContent | null> {
+    const inline = parsed?.data?.data;
+    if (inline && inline.body !== undefined) return inline;
+
+    const contentUrl = parsed?.content_url;
+    if (!contentUrl) return null;
+
+    const url = /^https?:\/\//i.test(contentUrl)
+      ? contentUrl
+      : this.site.replace(/\/$/, '') + contentUrl;
+
+    // Only ever send the session cookie to the source's own hosts. The server
+    // controls content_url, and an absolute one could point anywhere.
+    const hostOf = (value: string) =>
+      (value.match(/^https?:\/\/([^/?#]+)/i)?.[1] || '').toLowerCase();
+    const siteHost = hostOf(this.site);
+    const targetHost = hostOf(url);
+    const sameSite =
+      !!siteHost &&
+      (targetHost === siteHost || targetHost.endsWith('.' + siteHost));
+
+    const res = await fetchApi(url, {
+      headers: {
+        'Accept': 'application/json',
+        ...(cookie && sameSite ? { Cookie: cookie } : {}),
+      },
+    });
+    this.assertNotChallenged(res);
+    const text = await res.text();
+    try {
+      return JSON.parse(text)?.data?.data ?? null;
+    } catch (e) {
+      return null;
+    }
+  }
+
   /** Only attempt the sign-in link once per app run: the links are single-use. */
   signInAttempted = false;
 
@@ -111,6 +241,7 @@ class WTRLAB implements Plugin.PluginBase {
           'Referer': this.site,
         },
       });
+      this.assertNotChallenged(res);
       const landedOn = (res.url || '').replace(this.site, '/') || 'unknown';
       return `Sign-in: redeem token HTTP ${res.status}, ended at ${landedOn}`;
     } catch (e) {
@@ -131,6 +262,7 @@ class WTRLAB implements Plugin.PluginBase {
           ...(cookie ? { Cookie: cookie } : {}),
         },
       });
+      this.assertNotChallenged(res);
       const text = await res.text();
       let body = null;
       try {
@@ -258,7 +390,7 @@ class WTRLAB implements Plugin.PluginBase {
     }
 
     if (showLatestNovels) {
-      const response = await fetchApi(this.site + 'api/home/recent', {
+      const response = await this.fetchSite(this.site + 'api/home/recent', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -271,7 +403,7 @@ class WTRLAB implements Plugin.PluginBase {
       // Parse novels from JSON
       const novels: Plugin.NovelItem[] = recentNovel.data.map(
         (datum: Datum) => ({
-          name: datum.serie.data.title || datum.serie.slug || '',
+          name: resolveTokens(datum.serie.data.title || datum.serie.slug || ''),
           cover: datum.serie.data.image,
           path:
             this.sourceLang +
@@ -284,9 +416,9 @@ class WTRLAB implements Plugin.PluginBase {
 
       return novels;
     } else {
-      const finderPage = await fetchApi(this.site + 'en/novel-finder').then(
-        res => res.text(),
-      );
+      const finderPage = await this.fetchSite(
+        this.site + 'en/novel-finder',
+      ).then(res => res.text());
       const finderCheerio = parseHTML(finderPage);
       const nextData = finderCheerio('#__NEXT_DATA__').html();
       if (!nextData) {
@@ -296,7 +428,7 @@ class WTRLAB implements Plugin.PluginBase {
 
       link = `${this.site}_next/data/${buildId}/en/novel-finder.json?${params.toString()}`;
 
-      const response = await fetchApi(link);
+      const response = await this.fetchSite(link);
       const json = await response.json();
       const seenIds = new Set();
 
@@ -309,7 +441,7 @@ class WTRLAB implements Plugin.PluginBase {
           return true;
         })
         .map((novel: Datum) => ({
-          name: novel.data.title,
+          name: resolveTokens(novel.data.title),
           cover: novel.data.image,
           path: `${this.sourceLang}serie-${novel.raw_id}/${novel.slug}`,
         }));
@@ -319,9 +451,10 @@ class WTRLAB implements Plugin.PluginBase {
   }
 
   async fetchTokens() {
-    const body = await fetchApi(this.site + this.sourceLang).then(res =>
-      res.text(),
-    );
+    // Missing tokens are not fatal, so only a challenge stops here.
+    const res = await fetchApi(this.site + this.sourceLang);
+    this.assertNotChallenged(res);
+    const body = await res.text();
     const $ = parseHTML(body);
 
     this.baggage = $('meta[name="baggage"]').attr('content') ?? '';
@@ -329,7 +462,9 @@ class WTRLAB implements Plugin.PluginBase {
   }
 
   async parseNovel(novelPath: string): Promise<Plugin.SourceNovel> {
-    const body = await fetchApi(this.site + novelPath).then(res => res.text());
+    const body = await this.fetchSite(this.site + novelPath).then(res =>
+      res.text(),
+    );
     const loadedCheerio = parseHTML(body);
 
     const baggage = loadedCheerio('meta[name="baggage"]').attr('content');
@@ -351,8 +486,8 @@ class WTRLAB implements Plugin.PluginBase {
 
     const novel: Plugin.SourceNovel = {
       path: novelPath,
-      name: loadedCheerio('h1.text-uppercase').text(),
-      summary: loadedCheerio('.lead').text().trim(),
+      name: resolveTokens(loadedCheerio('h1.text-uppercase').text()),
+      summary: resolveTokens(loadedCheerio('.lead').text().trim()),
     };
 
     if (nextDataText) {
@@ -363,10 +498,10 @@ class WTRLAB implements Plugin.PluginBase {
         // console.log('Parsed novel JSON data:', serieData);
 
         if (serieData) {
-          novel.name = serieData.data?.title || '';
+          novel.name = resolveTokens(serieData.data?.title || '');
           novel.cover = serieData.data?.image || '';
-          novel.summary = serieData.data?.description || '';
-          novel.author = serieData.data?.author || '';
+          novel.summary = resolveTokens(serieData.data?.description || '');
+          novel.author = resolveTokens(serieData.data?.author || '');
           rawId = serieData.raw_id || null;
           slug = serieData.slug || null;
 
@@ -387,10 +522,11 @@ class WTRLAB implements Plugin.PluginBase {
     }
 
     if (!novel.name) {
-      novel.name =
+      novel.name = resolveTokens(
         loadedCheerio('h1.text-uppercase').text() ||
-        loadedCheerio('h1.long-title').text() ||
-        loadedCheerio('.title-wrap h1').text().trim();
+          loadedCheerio('h1.long-title').text() ||
+          loadedCheerio('.title-wrap h1').text().trim(),
+      );
     }
 
     if (!novel.cover) {
@@ -400,10 +536,11 @@ class WTRLAB implements Plugin.PluginBase {
     }
 
     if (!novel.summary) {
-      novel.summary =
+      novel.summary = resolveTokens(
         loadedCheerio('.description').text().trim() ||
-        loadedCheerio('.desc-wrap .description').text().trim() ||
-        loadedCheerio('.lead').text().trim();
+          loadedCheerio('.desc-wrap .description').text().trim() ||
+          loadedCheerio('.lead').text().trim(),
+      );
     }
 
     // Genres and tags live in __NEXT_DATA__ as numeric ids, not in the page
@@ -434,7 +571,7 @@ class WTRLAB implements Plugin.PluginBase {
 
         if (Array.isArray(pageProps?.tags)) {
           for (const tag of pageProps.tags) {
-            const title = tag?.title && String(tag.title).trim();
+            const title = tag?.title && resolveTokens(String(tag.title).trim());
             if (title) labels.push(title);
           }
         }
@@ -511,6 +648,7 @@ class WTRLAB implements Plugin.PluginBase {
       try {
         chapters = await this.fetchAllChapters(rawId, slug);
       } catch (error) {
+        if (String(error).includes('Cloudflare protection')) throw error;
         console.error('Failed to fetch chapters via API:', error);
         chapters = [];
       }
@@ -605,7 +743,9 @@ class WTRLAB implements Plugin.PluginBase {
     }
 
     for (const src of URLs) {
+      // A failed script just moves on to the next one; a challenge won't pass.
       const script = await fetchApi(`${this.site}${src}`);
+      this.assertNotChallenged(script);
       const raw = await script.text();
       index = raw.indexOf(searchKey);
       if (index >= 0) {
@@ -660,7 +800,7 @@ class WTRLAB implements Plugin.PluginBase {
     }
 
     if (!rawId || !chapterNo) {
-      const body = await fetchApi(url).then(res => res.text());
+      const body = await this.fetchSite(url).then(res => res.text());
 
       loadedCheerio = parseHTML(body);
       const chapterJson = loadedCheerio('#__NEXT_DATA__').html() + '';
@@ -682,6 +822,7 @@ class WTRLAB implements Plugin.PluginBase {
 
     const attemptLog: string[] = [];
     let parsedJson;
+    let content: ChapterContent | null = null;
     let usedType: string | null = null;
 
     // Establish a session from the emailed link before asking for a chapter.
@@ -706,6 +847,8 @@ class WTRLAB implements Plugin.PluginBase {
           force_retry: false,
         }),
       });
+
+      this.assertNotChallenged(apiResponse);
 
       // Read as text first: an auth redirect or a Cloudflare challenge returns
       // HTML, and .json() would throw before we could report what came back.
@@ -748,6 +891,18 @@ class WTRLAB implements Plugin.PluginBase {
         continue;
       }
 
+      // Resolve the body here, not after the loop: a healthy envelope does
+      // not guarantee a payload, and if this mode has none the next one
+      // (typically Web) should still get its turn.
+      const resolved = await this.resolveChapterContent(candidate, cookie);
+      if (!resolved || resolved.body === undefined) {
+        attemptLog.push(
+          `"${type}": request succeeded but no chapter content was returned`,
+        );
+        continue;
+      }
+
+      content = resolved;
       usedType = type;
       break;
     }
@@ -759,19 +914,34 @@ class WTRLAB implements Plugin.PluginBase {
         ? `session cookie sent (${cookie.length} chars)`
         : 'no session cookie set';
 
-    if (!usedType || !parsedJson?.data?.data) {
+    if (!usedType || !content || content.body === undefined) {
       const errorMsg =
         `None of the requested translations could be loaded [${cookieState}]. ` +
         (attemptLog.length
           ? attemptLog.join(' | ')
-          : 'The server returned no usable response.');
+          : usedType
+            ? 'The server accepted the request but returned no chapter content.'
+            : 'The server returned no usable response.');
       console.error(errorMsg);
       throw new Error(errorMsg);
     }
-    let chapterContent: any = parsedJson.data.data.body;
-    const chapterTitle: string | undefined = parsedJson?.chapter?.title;
+
+    let chapterContent: any = content.body;
     const chapterGlossary: ChapterContent['glossary_data'] | undefined =
-      parsedJson?.data?.data?.glossary_data;
+      content.glossary_data;
+    const dictionary = chapterGlossary?.terms?.map(t => t[0]) || [];
+
+    let chapterTitle: string | undefined =
+      parsedJson?.chapter?.title || content.title;
+    if (chapterTitle) {
+      chapterTitle = resolveTokens(chapterTitle, true);
+      if (dictionary.length > 0) {
+        chapterTitle = chapterTitle.replaceAll(
+          /(?:wtr-lab\s+)?※([0-9]+)[⛬〓]/g,
+          (m: string, index: string) => dictionary[parseInt(index)] || m,
+        );
+      }
+    }
 
     let htmlString = '';
     if (chapterTitle) {
@@ -783,7 +953,7 @@ class WTRLAB implements Plugin.PluginBase {
       chapterContent.toString().startsWith('str:')
     ) {
       if (!loadedCheerio) {
-        const body = await fetchApi(url).then(res => res.text());
+        const body = await this.fetchSite(url).then(res => res.text());
 
         loadedCheerio = parseHTML(body);
       }
@@ -807,16 +977,76 @@ class WTRLAB implements Plugin.PluginBase {
       )}</small></p>`;
     }
 
-    const dictionary = chapterGlossary?.terms?.map(t => t[0]) || [];
+    const images: string[] = Array.isArray(content.images)
+      ? content.images
+      : Array.isArray((parsedJson as any)?.images)
+        ? (parsedJson as any).images
+        : [];
+    let imageIndex = 0;
 
-    for (let text of chapterContent) {
+    const resolveImageUrl = (imgUrl: string): string => {
+      if (!imgUrl) return '';
+      if (/^https?:\/\//i.test(imgUrl)) return imgUrl;
+      if (imgUrl.startsWith('//')) return 'https:' + imgUrl;
+      return this.site.replace(/\/$/, '') + '/' + imgUrl.replace(/^\//, '');
+    };
+
+    const escapeAttr = (str: string): string =>
+      str
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+
+    const paragraphs: string[] = Array.isArray(chapterContent)
+      ? chapterContent
+      : typeof chapterContent === 'string'
+        ? chapterContent.split('\n')
+        : [];
+
+    for (let text of paragraphs) {
+      if (typeof text !== 'string') continue;
+      text = resolveTokens(text, true);
       if (dictionary.length > 0) {
         text = text.replaceAll(
           /(?:wtr-lab\s+)?※([0-9]+)[⛬〓]/g,
           (m: string, index: string) => dictionary[parseInt(index)] || m,
         );
       }
-      htmlString += `<p>${text}</p>`;
+
+      if (/\[\s*image\s*\]/i.test(text)) {
+        const parts = text.split(/(\[\s*image\s*\])/gi);
+        let paragraphHtml = '';
+        for (const part of parts) {
+          if (/^\[\s*image\s*\]$/i.test(part.trim())) {
+            const nextImg = images[imageIndex++];
+            if (nextImg) {
+              paragraphHtml += `<img src="${escapeAttr(
+                resolveImageUrl(nextImg),
+              )}" />`;
+            } else {
+              paragraphHtml += '[image]';
+            }
+          } else if (part) {
+            paragraphHtml += part;
+          }
+        }
+        if (paragraphHtml.trim()) {
+          htmlString += `<p>${paragraphHtml}</p>`;
+        }
+      } else {
+        htmlString += `<p>${text}</p>`;
+      }
+    }
+
+    while (imageIndex < images.length) {
+      const remainingImg = images[imageIndex++];
+      if (remainingImg) {
+        htmlString += `<p><img src="${escapeAttr(
+          resolveImageUrl(remainingImg),
+        )}" /></p>`;
+      }
     }
 
     return htmlString;
@@ -835,7 +1065,7 @@ class WTRLAB implements Plugin.PluginBase {
       const end = start + batchSize - 1;
 
       try {
-        const response = await fetchApi(
+        const response = await this.fetchSite(
           `${this.site}api/chapters/${rawId}?start=${start}&end=${end}`,
           {
             headers: {
@@ -854,10 +1084,11 @@ class WTRLAB implements Plugin.PluginBase {
 
         const batchChapters: Plugin.ChapterItem[] = chapters.map(
           (apiChapter: ApiChapter) => ({
-            name:
+            name: resolveTokens(
               apiChapter.title ||
-              apiChapter.name ||
-              `Chapter ${apiChapter.order}`,
+                apiChapter.name ||
+                `Chapter ${apiChapter.order}`,
+            ),
             path: `${this.sourceLang}serie-${rawId}/${slug}/chapter-${apiChapter.order}`,
             releaseTime: apiChapter.updated_at?.substring(0, 10),
             chapterNumber: apiChapter.order,
@@ -873,6 +1104,7 @@ class WTRLAB implements Plugin.PluginBase {
 
         start += batchSize;
       } catch (error) {
+        if (String(error).includes('Cloudflare protection')) throw error;
         console.error(`Failed to fetch chapters ${start}-${end}:`, error);
         hasMore = false;
         break;
@@ -1973,9 +2205,17 @@ type ApiChapter = {
 type ChapterData = {
   data: ChapterContent;
 };
+type ReaderResponse = {
+  success?: boolean;
+  content_url?: string;
+  chapter?: { title?: string; locked?: boolean };
+  data?: { data?: ChapterContent };
+};
+
 type ChapterContent = {
   title: string;
-  body: string;
+  body: string | string[];
+  images?: string[];
   glossary_data?: {
     terms: string[][];
   };

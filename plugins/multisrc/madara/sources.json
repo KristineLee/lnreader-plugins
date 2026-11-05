@@ -76,6 +76,8 @@
     "sourceName": "MeioNovel",
     "options": {
       "useNewChapterEndpoint": true,
+      "versionIncrements": 1,
+      "customJs": "chapterText.find('p').each((_, p) => { const el = loadedCheerio(p); if (!el.find('br').length) return; const lines = (el.html() || '').split(/<br\\s*\\/?>/i).map(l => l.replace(/\\uFEFF/g, '').trim()).filter(l => l.replace(/&nbsp;|\\u00A0/g, '').trim()); el.replaceWith(lines.map(l => '<p>' + l + '</p>').join('')); });",
       "lang": "Indonesian"
     }
   },
@@ -221,7 +223,8 @@
     "sourceSite": "https://www.foxaholic.com/",
     "sourceName": "Foxaholic",
     "options": {
-      "useNewChapterEndpoint": true
+      "useNewChapterEndpoint": true,
+      "resolveCoverDataUri": true
     }
   },
   {
@@ -282,15 +285,6 @@
     "sourceName": "Fans Translations",
     "options": {
       "useNewChapterEndpoint": true
-    }
-  },
-  {
-    "id": "worldnovel",
-    "sourceSite": "https://world-novel.fr/",
-    "sourceName": "WorldNovel",
-    "options": {
-      "useNewChapterEndpoint": true,
-      "lang": "French"
     }
   },
   {
@@ -408,13 +402,11 @@
   },
   {
     "id": "bellereservoir",
-    "sourceSite": "https://bellereservoir.com/",
-    "sourceName": "Belle Reservoir",
+    "sourceSite": "https://bellerepository.com/",
+    "sourceName": "Belle Repository",
     "options": {
       "useNewChapterEndpoint": true,
-      "lang": "English",
-      "down": true,
-      "downSince": 1777153113000
+      "lang": "English"
     }
   },
   {
@@ -631,8 +623,7 @@
     "sourceName": "BoxNovel",
     "options": {
       "lang": "English",
-      "useNewChapterEndpoint": true,
-      "versionIncrements": 2
+      "useNewChapterEndpoint": true
     }
   },
   {
@@ -659,8 +650,7 @@
     "sourceName": "Lovelyblossoms",
     "options": {
       "useNewChapterEndpoint": true,
-      "browserHeaders": true,
-      "versionIncrements": 1
+      "browserHeaders": true
     }
   },
   {
@@ -669,6 +659,23 @@
     "sourceName": "Tangerine Archive",
     "options": {
       "lang": "English",
+      "useNewChapterEndpoint": true
+    }
+  },
+  {
+    "id": "bailiantales",
+    "sourceSite": "https://bailiantales.com/",
+    "sourceName": "BaiLianTales",
+    "options": {
+      "useNewChapterEndpoint": true
+    }
+  },
+  {
+    "id": "anslid",
+    "sourceSite": "https://anslid.com/",
+    "sourceName": "Anslid",
+    "options": {
+      "lang": "Spanish",
       "useNewChapterEndpoint": true
     }
   }
