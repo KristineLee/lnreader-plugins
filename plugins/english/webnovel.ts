@@ -3,86 +3,11 @@ import { fetchApi } from '@libs/fetch';
 import { Filters, FilterTypes } from '@libs/filterInputs';
 import { Plugin } from '@/types/plugin';
 import { storage } from '@libs/storage';
-import { NovelStatus } from '@libs/novelStatus';
-
-const MOBILE_SITE = 'https://m.webnovel.com';
-
-type Named = { name?: string }[] | null;
-type BookInfo = {
-  bookId?: string;
-  bookName?: string;
-  authorName?: string;
-  authorItems?: Named;
-  description?: string;
-  categoryName?: string;
-  tagInfos?: { tagName?: string }[] | null;
-  actionStatus?: number;
-  totalScore?: number;
-  voters?: number;
-  pvNum?: number;
-  chapterNum?: number;
-  totalChapterNum?: number;
-  updateFrequency?: number;
-  frequencyUnit?: string;
-  updateTime?: number;
-  coverUpdateTime?: number;
-  groupItems?: Named;
-  translatorItems?: Named;
-  editorItems?: Named;
-};
-type TabInfo = { power?: { nums?: number }; golden?: { nums?: number } };
-type MobileChapter = { publishTime?: number };
-/** `props` of a m.webnovel.com page's `__NEXT_DATA__` */
-type NextProps = {
-  initialProps?: {
-    pageProps?: { initData?: { bookInfo?: BookInfo; tabInfo?: TabInfo } };
-  };
-  initialState?: {
-    entities?: { chapter?: Record<string, MobileChapter> };
-  };
-};
-
-const STATUS: Record<number, string> = {
-  30: NovelStatus.Ongoing,
-  50: NovelStatus.Completed,
-};
-
-const grouped = (n: number) =>
-  String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-
-/** Same as the site: 82255255 -> "82.2M" (truncated, not rounded) */
-const compact = (n: number) => {
-  const units: [number, string][] = [
-    [1e9, 'B'],
-    [1e6, 'M'],
-    [1e3, 'K'],
-  ];
-  for (const [div, suffix] of units) {
-    if (n >= div) return (Math.floor((n / div) * 10) / 10).toFixed(1) + suffix;
-  }
-  return grouped(n);
-};
-
-const names = (items?: Named) =>
-  (items || []).map(i => i.name?.trim()).filter((n): n is string => !!n);
-
-const titleCase = (s: string) =>
-  s
-    .trim()
-    .toLowerCase()
-    .replace(/(^|\s)\S/g, c => c.toUpperCase());
-
-const bookIdOf = (novelPath: string) => novelPath.match(/(\d+)\/?$/)?.[1];
-
-const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-
-const stat = (n: unknown, format: (n: number) => string) =>
-  typeof n === 'number' && n >= 0 ? format(n) : undefined;
 
 class Webnovel implements Plugin.PluginBase {
   id = 'webnovel';
   name = 'Webnovel';
-  version = '1.1.0';
+  version = '1.1.1';
   icon = 'src/en/webnovel/icon.png';
   site = 'https://www.webnovel.com';
   headers = {
@@ -147,6 +72,8 @@ class Webnovel implements Plugin.PluginBase {
       filters,
     }: Plugin.PopularNovelsOptions<typeof this.filters>,
   ): Promise<Plugin.NovelItem[]> {
+    const sort = filters?.sort?.value || '1';
+
     if (filters?.fanfic_search.value) {
       return this.searchNovelsInternal(
         filters.fanfic_search.value,
@@ -154,8 +81,37 @@ class Webnovel implements Plugin.PluginBase {
         'fanfic',
       );
     }
+
     let url = this.site + '/stories/';
     const params = new URLSearchParams();
+
+    if (filters?.tag?.value && filters.tag.value !== '0') {
+      params.append('orderBy', sort);
+      params.append('pageIndex', pageNo.toString());
+      url = `${this.site}/tags/${filters.tag.value}-novel?${params.toString()}`;
+
+      const result = await fetchApi(url, {
+        headers: this.headers,
+      });
+      const body = await result.text();
+      const loadedCheerio = parseHTML(body);
+
+      return this.parseTagNovels(loadedCheerio);
+    }
+
+    if (filters?.browse_type?.value === 'fanfic') {
+      params.append('orderBy', filters.sort.value);
+      params.append('pageIndex', pageNo.toString());
+      url = this.site + '/stories/fanfic?' + params.toString();
+
+      const result = await fetchApi(url, {
+        headers: this.headers,
+      });
+      const body = await result.text();
+      const loadedCheerio = parseHTML(body);
+
+      return this.parseNovels(loadedCheerio, true, false);
+    }
 
     if (showLatestNovels) {
       url += `novel?orderBy=5&pageIndex=${pageNo}`;
@@ -201,76 +157,22 @@ class Webnovel implements Plugin.PluginBase {
     return this.parseNovels(loadedCheerio, true, false);
   }
 
-  /** Desktop page; retries a Cloudflare "Just a moment" 403 once, then throws */
-  async fetchDesktop(url: string): Promise<string> {
-    let status = 0;
-    for (let attempt = 0; attempt < 2; attempt++) {
-      if (attempt) await delay(1500);
-      const result = await fetchApi(url, { headers: this.headers });
-      if (result.ok) return result.text();
-      status = result.status;
-    }
-    throw new Error(
-      `Webnovel: HTTP ${status} for ${url} (Cloudflare? open the novel in WebView, then retry)`,
-    );
-  }
+  async parseChapters(novelPath: string): Promise<Plugin.ChapterItem[]> {
+    const url = this.site + novelPath + '/catalog';
+    const result = await fetchApi(url, {
+      headers: this.headers,
+    });
+    const body = await result.text();
 
-  /**
-   * Best effort: undefined on Cloudflare blocks, network or parse errors.
-   * No User-Agent override: the app's default is the WebView's, so its
-   * Cloudflare cookies apply (m.webnovel.com redirects desktop agents).
-   */
-  async fetchNextData(url: string): Promise<NextProps | undefined> {
-    let html = '';
-    for (let attempt = 0; attempt < 2 && !html; attempt++) {
-      if (attempt) await delay(1500);
-      try {
-        const result = await fetchApi(url);
-        if (result.status === 404) return undefined;
-        if (result.ok) html = await result.text();
-      } catch {
-        // network error: retry once
-      }
-    }
-    // indexOf, not a regex: pages are 1-3 MB
-    const tag = html.indexOf('id="__NEXT_DATA__"');
-    if (tag < 0) return undefined;
-    const start = html.indexOf('>', tag) + 1;
-    try {
-      return JSON.parse(html.slice(start, html.indexOf('</script>', start)))
-        .props;
-    } catch {
-      return undefined;
-    }
-  }
-
-  /**
-   * Paths come from the desktop catalog and must not change: the app keys
-   * chapters on (novelId, path). Mobile chapters (same ids) add dates.
-   */
-  parseChapterList(body: string, mobile?: NextProps): Plugin.ChapterItem[] {
     const loadedCheerio = parseHTML(body);
-    const mobileChapters = mobile?.initialState?.entities?.chapter || {};
 
     const chapters: Plugin.ChapterItem[] = [];
 
     loadedCheerio('.volume-item').each((i_v_, ele_v) => {
-      // "Volume 0 : Auxiliary Volume" or "Volume 1"
-      const heading = loadedCheerio(ele_v)
-        .find('h4')
-        .first()
-        .text()
-        .replace(/\s+/g, ' ')
-        .trim();
-      const volumeMatch =
-        heading.match(/^Volume\s*(\d+)\s*(?::\s*(.+))?$/) ||
-        loadedCheerio(ele_v)
-          .first()
-          .text()
-          .match(/Volume\s(\d+)/);
-      const volumeName = volumeMatch
-        ? `Volume ${volumeMatch[1]}` +
-          (volumeMatch[2]?.trim() ? `: ${volumeMatch[2].trim()}` : '')
+      const originalVolumeName = loadedCheerio(ele_v).first().text().trim();
+      const volumeNameMatch = originalVolumeName.match(/Volume\s(\d+)/);
+      const volumeName = volumeNameMatch
+        ? `Volume ${volumeNameMatch[1]}`
         : 'Unknown Volume';
 
       loadedCheerio(ele_v)
@@ -282,19 +184,11 @@ class Webnovel implements Plugin.PluginBase {
               'No Title Found');
           const chapterPath = loadedCheerio(ele_c).find('a').attr('href');
           const locked = loadedCheerio(ele_c).find('svg').length;
-          const publishTime =
-            mobileChapters[loadedCheerio(ele_c).attr('data-cid') || '']
-              ?.publishTime;
 
           if (chapterPath && !(locked && this.hideLocked)) {
             chapters.push({
               name: locked ? `${chapterName} 🔒` : chapterName,
               path: chapterPath,
-              // Absolute only: relative dates would change on every refresh
-              releaseTime:
-                publishTime && !isNaN(new Date(publishTime).getTime())
-                  ? new Date(publishTime).toISOString()
-                  : undefined,
             });
           }
         });
@@ -303,146 +197,73 @@ class Webnovel implements Plugin.PluginBase {
     return chapters;
   }
 
-  /** Desktop `g_data.book= {...}`: JSON except for escapes like `\ ` */
-  parseGData(body: string): BookInfo | undefined {
-    const start = body.indexOf('{', body.indexOf('g_data.book='));
-    const end = body.indexOf(',g_data.', start);
-    if (body.indexOf('g_data.book=') < 0 || end < 0) return undefined;
-    try {
-      return JSON.parse(
-        body
-          .slice(start, end)
-          .replace(/\\(["\\/bfnrtu])|\\/g, (m, valid) => (valid ? m : '')),
-      ).bookInfo;
-    } catch {
-      return undefined;
-    }
+  /**
+   * Tag pages (/tags/{tag}-novel) use a different listing than the bookcity:
+   * `div.g_book_item` cards whose `a[title]` carries the novel name and path.
+   */
+  async parseTagNovels(loadedCheerio: CheerioAPI): Promise<Plugin.NovelItem[]> {
+    return loadedCheerio('.g_book_item')
+      .map((i_, ele) => {
+        const anchor = loadedCheerio(ele).find('a[title]').first();
+        const novelName = anchor.attr('title') || 'No Title Found';
+        const novelCover =
+          loadedCheerio(ele).find('img').attr('data-original') ||
+          loadedCheerio(ele).find('img').attr('src');
+        const novelPath = anchor.attr('href');
+
+        if (!novelPath) return null;
+
+        return {
+          name: novelName,
+          cover: novelCover ? 'https:' + novelCover : '',
+          path: novelPath,
+        };
+      })
+      .get()
+      .filter(novel => novel !== null);
   }
 
   async parseNovel(novelPath: string): Promise<Plugin.SourceNovel> {
-    // Required, so first: if Cloudflare blocks it we throw before the extras
-    const catalog = await this.fetchDesktop(this.site + novelPath + '/catalog');
-    const bookId = bookIdOf(novelPath);
-    // The mobile book page is ~200 KB vs up to 3.4 MB desktop and has more
-    // stats; only the mobile catalog has absolute chapter dates
-    const [mobileBook, mobileCatalog] = await Promise.all([
-      this.fetchNextData(MOBILE_SITE + novelPath),
-      bookId
-        ? this.fetchNextData(`${MOBILE_SITE}/book/${bookId}/catalog`)
-        : undefined,
-    ]);
-    const initData = mobileBook?.initialProps?.pageProps?.initData;
+    const url = this.site + novelPath;
+    const result = await fetchApi(url, {
+      headers: this.headers,
+    });
+    const body = await result.text();
 
-    // Throws when blocked: placeholders would overwrite real metadata
-    const body = initData?.bookInfo
-      ? ''
-      : await this.fetchDesktop(this.site + novelPath);
+    const loadedCheerio = parseHTML(body);
 
-    return {
-      ...this.buildNovel(novelPath, body, initData),
-      chapters: this.parseChapterList(catalog, mobileCatalog),
-    };
-  }
-
-  /** From mobile data, else desktop `g_data`, else desktop HTML */
-  buildNovel(
-    novelPath: string,
-    desktopBody: string,
-    initData?: { bookInfo?: BookInfo; tabInfo?: TabInfo },
-  ): Plugin.SourceNovel {
-    const book = initData?.bookInfo || this.parseGData(desktopBody) || {};
-    const tab = initData?.tabInfo;
-    const loadedCheerio = parseHTML(desktopBody);
-
-    const genres: string[] = [];
-    [book.categoryName]
-      .concat((book.tagInfos || []).map(t => t.tagName))
-      .forEach(genre => {
-        const name = genre && titleCase(genre);
-        if (name && genres.indexOf(name) < 0) genres.push(name);
-      });
-
-    const translators = names(book.groupItems).length
-      ? names(book.groupItems)
-      : names(book.translatorItems);
-    const editors = names(book.editorItems).filter(
-      n => names(book.translatorItems).indexOf(n) < 0,
-    );
-    const chapterCount = book.totalChapterNum || book.chapterNum;
-    const info: { label: string; value: string }[] = [];
-    const add = (label: string, value?: string) => {
-      if (value) info.push({ label, value });
-    };
-    add('Views', stat(book.pvNum, compact));
-    add('Power Stones', stat(tab?.power?.nums, grouped));
-    add('Golden Tickets', stat(tab?.golden?.nums, grouped));
-    add('Chapters', stat(chapterCount, grouped));
-    add(
-      'Schedule',
-      book.updateFrequency && book.frequencyUnit
-        ? `${book.updateFrequency} ${book.frequencyUnit.replace(/\s*\/\s*/g, '/')}`
-        : undefined,
-    );
-    add(
-      'Updated',
-      book.updateTime && !isNaN(new Date(book.updateTime).getTime())
-        ? new Date(book.updateTime).toISOString().slice(0, 10)
-        : undefined,
-    );
-    add('Translator', translators.join(', '));
-    add('Editor', editors.join(', '));
-
-    const htmlStatus = loadedCheerio('.det-hd-detail svg')
-      .filter((i_, ele) => loadedCheerio(ele).attr('title') === 'Status')
-      .next()
-      .text()
-      .trim();
-
-    const name = book.bookName || loadedCheerio('.g_thumb > img').attr('alt');
-    if (!name) {
-      throw new Error(`Webnovel: no novel data found for ${novelPath}`);
-    }
-    const bookId = bookIdOf(novelPath);
-    const coverSrc = loadedCheerio('.g_thumb > img').attr('src');
-
-    return {
+    const novel: Plugin.SourceNovel = {
       path: novelPath,
-      name,
-      cover:
-        bookId && book.coverUpdateTime
-          ? `https://book-pic.webnovel.com/bookcover/${bookId}?imageMogr2/thumbnail/600x&imageId=${book.coverUpdateTime}`
-          : coverSrc && 'https:' + coverSrc,
-      genres: genres.length
-        ? genres.join(',')
-        : loadedCheerio('.det-hd-detail > .det-hd-tag').attr('title') || '',
+      name: loadedCheerio('.g_thumb > img').attr('alt') || 'No Title Found',
+      cover: 'https:' + loadedCheerio('.g_thumb > img').attr('src'),
+      genres: loadedCheerio('.det-hd-detail > .det-hd-tag').attr('title') || '',
       summary:
-        book.description?.replace(/\r\n?/g, '\n').trim() ||
         loadedCheerio('.j_synopsis > p')
           .find('br')
           .replaceWith('\n')
           .end()
           .text()
-          .trim() ||
-        'No Summary Found',
+          .trim() || 'No Summary Found',
       author:
-        book.authorName ||
-        names(book.authorItems).join(', ') ||
         loadedCheerio('.det-info .c_s')
           .filter((i_, ele) => {
             return loadedCheerio(ele).text().trim() === 'Author:';
           })
           .next()
           .text()
-          .trim() ||
-        'No Author Found',
+          .trim() || 'No Author Found',
       status:
-        (book.actionStatus && STATUS[book.actionStatus]) ||
-        htmlStatus ||
-        NovelStatus.Unknown,
-      rating: book.totalScore || undefined,
-      ratingCount: book.voters || undefined,
-      info: info.length ? info : undefined,
+        loadedCheerio('.det-hd-detail svg')
+          .filter((i_, ele) => {
+            return loadedCheerio(ele).attr('title') === 'Status';
+          })
+          .next()
+          .text()
+          .trim() || 'Unknown Status',
+      chapters: await this.parseChapters(novelPath),
     };
+
+    return novel;
   }
 
   async parseChapter(chapterPath: string): Promise<string> {
@@ -565,6 +386,20 @@ class Webnovel implements Plugin.PluginBase {
       ],
       type: FilterTypes.Picker,
     },
+    browse_type: {
+      label: 'Browse',
+      value: 'novel',
+      options: [
+        { label: 'Novels', value: 'novel' },
+        { label: 'Fanfics', value: 'fanfic' },
+      ],
+      type: FilterTypes.Picker,
+    },
+    tag: {
+      label: 'Tag (A-Z browse)',
+      options: TAG_OPTIONS,
+      type: FilterTypes.Picker,
+    },
     fanfic_search: {
       label: 'Search fanfics (Overrides other filters)',
       value: '',
@@ -574,3 +409,89 @@ class Webnovel implements Plugin.PluginBase {
 }
 
 export default new Webnovel();
+
+/** Tag slugs currently indexed at webnovel.com/tags, sorted A-Z. */
+const TAG_OPTIONS = [
+  { label: 'Abandoned', value: 'abandoned' },
+  { label: 'Academy', value: 'academy' },
+  { label: 'Action', value: 'action' },
+  { label: 'Adventure', value: 'adventure' },
+  { label: 'Another World', value: 'anotherworld' },
+  { label: 'Antihero', value: 'antihero' },
+  { label: 'Apocalypse', value: 'apocalypse' },
+  { label: 'Arranged Marriage', value: 'arrangedmarriage' },
+  { label: 'Aventura', value: 'aventura' },
+  { label: 'Beast Taming', value: 'beast-taming' },
+  { label: 'Beauty', value: 'beauty' },
+  { label: 'Betrayal', value: 'betrayal' },
+  { label: 'Blood Pumping', value: 'bloodpumping' },
+  { label: 'Campus', value: 'campus' },
+  { label: 'CEO', value: 'ceo' },
+  { label: 'Cheats', value: 'cheats' },
+  { label: 'Comedy', value: 'comedy' },
+  { label: 'Crossdressing', value: 'crossdressing' },
+  { label: 'Cultivation', value: 'cultivation' },
+  { label: 'Dark', value: 'dark' },
+  { label: 'Devil', value: 'devil' },
+  { label: 'Disaster', value: 'disaster' },
+  { label: 'Doctor', value: 'doctor' },
+  { label: 'Dragon', value: 'dragon' },
+  { label: 'Ecchi', value: 'ecchi' },
+  { label: 'Evolution', value: 'evolution' },
+  { label: 'Face Slapping', value: 'faceslapping' },
+  { label: 'Fast Paced', value: 'fastpaced' },
+  { label: 'Future', value: 'future' },
+  { label: 'Genius', value: 'genius' },
+  { label: 'Golden Finger', value: 'goldenfinger' },
+  { label: 'Harem', value: 'harem' },
+  { label: 'High IQ', value: 'highiq' },
+  { label: 'Historical', value: 'historical' },
+  { label: 'Humor', value: 'humor' },
+  { label: 'Immortal', value: 'immortal' },
+  { label: 'Isekai', value: 'isekai' },
+  { label: 'Level Up', value: 'levelup' },
+  { label: 'Love at First Sight', value: 'loveatfirstsight' },
+  { label: 'Magic', value: 'magic' },
+  { label: 'Martial Arts', value: 'martialarts' },
+  { label: 'Mecha', value: 'mecha' },
+  { label: 'Military', value: 'military' },
+  { label: 'Multiple Leads', value: 'multipleleads' },
+  { label: 'Mystery', value: 'mystery' },
+  { label: 'Myth', value: 'myth' },
+  { label: 'Nonhuman', value: 'nonhuman' },
+  { label: 'Ordinary', value: 'ordinary' },
+  { label: 'Overpowered', value: 'overpowered' },
+  { label: 'Positive', value: 'positive' },
+  { label: 'Powerful Couple', value: 'powerfulcouple' },
+  { label: 'R18', value: 'r18' },
+  { label: 'Rare Bloodline', value: 'rarebloodline' },
+  { label: 'Rebirth', value: 'rebirth' },
+  { label: 'Reincarnation', value: 'reincarnation' },
+  { label: 'Revenge', value: 'revenge' },
+  { label: 'Romance', value: 'romance' },
+  { label: 'Seductive', value: 'seductive' },
+  { label: 'Shapeshifter', value: 'shapeshifter' },
+  { label: 'Sistema', value: 'sistema' },
+  { label: 'Slice of Life', value: 'sliceoflife' },
+  { label: 'Smut', value: 'smut' },
+  { label: 'Soldier', value: 'soldier' },
+  { label: 'Summons', value: 'summons' },
+  { label: 'Supernatural', value: 'supernatural' },
+  { label: 'Superpowers', value: 'superpowers' },
+  { label: 'Survival', value: 'survival' },
+  { label: 'System', value: 'system' },
+  { label: 'Teen', value: 'teen' },
+  { label: 'The Strong Acting Weak', value: 'thestrongactingweak' },
+  { label: 'Time Travel', value: 'timetravel' },
+  { label: 'Tragedy', value: 'tragedy' },
+  { label: 'Transmigration', value: 'transmigration' },
+  { label: 'Unprincipled', value: 'unprincipled' },
+  { label: 'Urban', value: 'urban' },
+  { label: 'Vampire', value: 'vampire' },
+  { label: 'Video Game', value: 'videogame' },
+  { label: 'Villain', value: 'villain' },
+  { label: 'Weak to Strong', value: 'weaktostrong' },
+  { label: 'Werewolf', value: 'werewolf' },
+  { label: 'Wizards', value: 'wizards' },
+  { label: 'Zero to Hero', value: 'zerotohero' },
+] as const;
