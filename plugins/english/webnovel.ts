@@ -7,7 +7,7 @@ import { storage } from '@libs/storage';
 class Webnovel implements Plugin.PluginBase {
   id = 'webnovel';
   name = 'Webnovel';
-  version = '1.1.1';
+  version = '1.1.2';
   icon = 'src/en/webnovel/icon.png';
   site = 'https://www.webnovel.com';
   headers = {
@@ -397,6 +397,7 @@ class Webnovel implements Plugin.PluginBase {
     },
     tag: {
       label: 'Tag (A-Z browse)',
+      value: '0',
       options: TAG_OPTIONS,
       type: FilterTypes.Picker,
     },
@@ -408,10 +409,9 @@ class Webnovel implements Plugin.PluginBase {
   } satisfies Filters;
 }
 
-export default new Webnovel();
-
 /** Tag slugs currently indexed at webnovel.com/tags, sorted A-Z. */
 const TAG_OPTIONS = [
+  { label: 'All', value: '0' },
   { label: 'Abandoned', value: 'abandoned' },
   { label: 'Academy', value: 'academy' },
   { label: 'Action', value: 'action' },
@@ -495,3 +495,5 @@ const TAG_OPTIONS = [
   { label: 'Wizards', value: 'wizards' },
   { label: 'Zero to Hero', value: 'zerotohero' },
 ] as const;
+
+export default new Webnovel();
