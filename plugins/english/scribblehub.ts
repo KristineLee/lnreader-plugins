@@ -36,7 +36,7 @@ class ScribbleHubPlugin implements Plugin.PluginBase {
   name = 'Scribble Hub';
   icon = 'src/en/scribblehub/icon.png';
   site = 'https://www.scribblehub.com/';
-  version = '1.1.2';
+  version = '1.1.3';
 
   apiUrl = `${this.site}wp-json/fictionapp/v1/`;
 
@@ -44,6 +44,14 @@ class ScribbleHubPlugin implements Plugin.PluginBase {
     const res = await fetchApi(this.apiUrl + path, {
       headers: { Accept: 'application/json' },
     });
+    // Cloudflare answers a blocked request with 403/503 or an HTML challenge
+    // page; say so instead of failing on JSON parsing or showing "no results".
+    const isJson = (res.headers.get('content-type') || '').includes('json');
+    if (res.status === 403 || res.status === 503 || (res.ok && !isJson)) {
+      throw new Error(
+        'Scribble Hub blocked the request (Cloudflare check). Open Scribble Hub in WebView, complete the check, then retry.',
+      );
+    }
     if (!res.ok) {
       throw new Error(`Scribble Hub request failed: ${res.status}`);
     }
